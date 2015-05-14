@@ -3,80 +3,74 @@ from sklearn import mixture
 import numpy as np
 import re
 import urlparse
-# Spark Includes
-from pyspark.sql import SQLContext
 # local includes
-from algorithm import Algorithm
-from geo import haversine
-
-RE_REMOVE_CHARS = re.compile(r'[^a-zA-Z#_\']')
-def tokenize(inputRow):
-    """Initial stand in attempt at tokenizing strings
-    Params:
-      inputRow: a pyspark row
-    Output:
-     tokens: List of (word, location) tuples. Location field is the same for each tuple in a row
-    """
-    text = inputRow.text.strip()
-    if inputRow.geo and inputRow.geo.type == 'Point':
-        location = inputRow.geo.coordinates
-    else:
-        location = None
-    updates_to_make = []
-    if inputRow.entities and inputRow.entities.urls:
-        for url_row in inputRow.entities.urls:
-            updates_to_make.append((url_row.url, urlparse.urlparse(url_row.expanded_url).netloc.replace('.', '_')))
-    if inputRow.extended_entities and inputRow.extended_entities.media:
-        for media_row in inputRow.extended_entities.media:
-            updates_to_make.append((media_row.url, urlparse.urlparse(media_row.expanded_url).netloc.replace('.', '_')))
-    for (original, new_string) in updates_to_make:
-        #print(original, new_string)
-        text = text.replace(original, new_string)
-    text = RE_REMOVE_CHARS.sub(' ', text)
-    tokens = []
-    for item in text.lower().split():
-        if not item.startswith('@'):
-            tokens.append(item)
-    return (location, tokens)
-
-def tokenize_w_location(inputRow):
-    (location, tokens) = tokenize(inputRow)
-    output_tokens = []
-    for token in tokens:
-        output_tokens.append((token, location))
-    return output_tokens
+from src.algorithms.algorithm import Algorithm
+from src.utils.geo import haversine
 
 class GMM(Algorithm):
-    def __init__(self, context, options, saved_model_fname=None):
+    def __init__(self, context, sqlCtx, options, saved_model_fname=None):
         self.options = options
+        if 'fields' not in options:
+            self.options['fields'] = set(['text', 'user.location'])
         self.model = None
         if saved_model_fname:
             self.load(saved_model_fname)
         self.sc = context
-        self.sqlCtx = SQLContext(context)
+        self.sqlCtx = sqlCtx
 
     @staticmethod
-    def transform_tweets(tweet):
-        """ tokenizes and splits tweet"""
-        if tweet and tweet.text and tweet.coordinates:
-            URL = re.compile('http[s]*://[^ ]+')
-            AT_MENTION = re.compile(r'@[a-zA-Z0-9_]+')
-            RE_TWEET = re.compile(r',RT ')
-            REPLACE_CHARS = re.compile(r'[.!?@()]')
-            inputString = tweet.text
-            workingString = AT_MENTION.sub('AT_MENTION', inputString)
-            workingString = URL.sub('URL', workingString)
-            workingString = RE_TWEET.sub(',', workingString)
-            workingString = REPLACE_CHARS.sub('', workingString)
-            workingString = workingString.replace('\\n', ' ')
-            words = workingString.lower().split()
+    def tokenize(inputRow, fields=set(['text'])):
+        """Initial stand in attempt at tokenizing strings
+        Params:
+          inputRow: a pyspark row
+        Output:
+        (location, tokens): a tuple of the location of the tweet and a list of tokens in the tweet
+        """
+        # Allow us to select which fields get pulled for model
+        text = []
+        if 'text' in fields:
+            text.append(inputRow.text.strip())
+        if 'user.location' in fields:
+            text.append(inputRow.location.strip())
+        text = ' '.join(text)
+        # Get true location
+        if inputRow.geo and inputRow.geo.type == 'Point':
+            location = inputRow.geo.coordinates
+        else:
+            location = None
 
-            results = []
-            for word in words:
-                results.append((word, tweet.coordinates))
-            return results
+        if 'text' in fields:
+            # Clean up URLs in tweet
+            updates_to_make = []
+            if inputRow.entities and inputRow.entities.urls:
+                for url_row in inputRow.entities.urls:
+                    updates_to_make.append((url_row.url, urlparse.urlparse(url_row.expanded_url).netloc.replace('.', '_')))
+            if inputRow.extended_entities and inputRow.extended_entities.media:
+                for media_row in inputRow.extended_entities.media:
+                    updates_to_make.append((media_row.url, urlparse.urlparse(media_row.expanded_url).netloc.replace('.', '_')))
+            for (original, new_string) in updates_to_make:
+                #print(original, new_string)
+                text = text.replace(original, new_string)
+
+        # Convert to lowercase and get remove @mentions
+        tokens = []
+        for item in text.lower().split():
+            if not item.startswith('@'):
+                tokens.append(item)
+        return (location, tokens)
+
+    @staticmethod
+    def tokenize_w_location(inputRow, fields=set(['text'])):
+        """ Takes the result of tokenize and turns it into a list of (word, location) tuples to be aggregated"""
+        (location, tokens) = GMM.tokenize(inputRow, fields)
+        output_tokens = []
+        for token in tokens:
+            output_tokens.append((token, location))
+        return output_tokens
+
     @staticmethod
     def get_errors(model, points):
+        """Computes the median error for a GMM and a set of training points"""
         (best_lat, best_lon) = model.means_[np.argmax(model.weights_)]
         errors = []
         for point in points:
@@ -87,6 +81,7 @@ class GMM(Algorithm):
 
     @staticmethod
     def fit_gmm(data_array):
+        """ Searches within bounts to fit a GMM with the optimal number of components"""
         data_array = list(data_array)
         if len(data_array) < 10:
             return (None, None)
@@ -98,7 +93,6 @@ class GMM(Algorithm):
         best_i = -1
         best_model = None
         for i in range(min_components, max_components+1):
-            #print('Trying %d'%i)
             model = mixture.GMM(n_components=i, covariance_type='full', min_covar=0.001).fit(data_array)
             models.append(model)
             bic = model.bic(np.array(data_array))
@@ -108,35 +102,12 @@ class GMM(Algorithm):
                 best_model = model
                 best_i = i
 
-        # TODO: Add median error and return that
         median_error = GMM.get_errors(best_model, data_array)
         return (best_model, median_error)
 
-    def train(self, data_path):
-        if 'parquet' in data_path:
-            all_tweets = self.sqlCtx.parquetFile(data_path)
-        else:
-            all_tweets = self.sqlCtx.jsonFile(data_path)
-        all_tweets.registerTempTable('tweets')
-        tweets_w_geo = self.sqlCtx.sql('select geo, entities,  extended_entities, text from tweets where created_at is not null and geo.coordinates is not null')
-        word_ocurrences = tweets_w_geo.flatMap(tokenize_w_location)
-
-        # In this line we group occurrences of words, fit a gmm to each word and bring it back to the local context
-        self.model = word_ocurrences.groupByKey().mapValues(GMM.fit_gmm).collectAsMap()
-
-        # TODO: Add filter of infrequent words before move to the local context
-        # Clean out words that occur less than a threshold number of times
-        words_to_delete = []
-        for word in self.model:
-            (gmm, error) = self.model[word]
-            if gmm is None:
-                words_to_delete.append(word)
-
-        for word in words_to_delete:
-            del self.model[word]
-
     @staticmethod
     def combine_gmms(gmms):
+        """ Takes an array of gaussian mixture models and produces a GMM that is the weighted sum of the models"""
         n_components = sum([g[0].n_components for g in gmms])
         covariance_type = gmms[0][0].covariance_type
         new_gmm = mixture.GMM(n_components=n_components, covariance_type=covariance_type)
@@ -147,7 +118,9 @@ class GMM(Algorithm):
         return new_gmm
 
     @staticmethod
-    def compute_error(input_val, model=None):
+    def compute_error_using_model(input_val, model=None):
+        """ Given a model that maps tokens -> GMMs this will compute the most likely point and return the distance
+            from the most likely point to the true location"""
         (location, tokens) = input_val
         true_lat, true_lon = location
         models = []
@@ -164,22 +137,54 @@ class GMM(Algorithm):
         distance = haversine(best_lon, best_lat, true_lon, true_lat)
         return distance
 
-    def test(self, data_path):
+    def train(self, data_path):
+        """ Train a set of GMMs for a given set of training data"""
         if 'parquet' in data_path:
             all_tweets = self.sqlCtx.parquetFile(data_path)
         else:
             all_tweets = self.sqlCtx.jsonFile(data_path)
         all_tweets.registerTempTable('tweets')
-        tweets_w_geo = self.sqlCtx.sql('select geo, entities,  extended_entities, text from tweets where created_at is not null and geo.coordinates is not null')
+        tweets_w_geo = self.sqlCtx.sql('select geo, entities,  extended_entities, %s from tweets where geo.coordinates is not null' % ','.join(list(self.options['fields'])))
+
+        def tokenize_with_defaults(fields):
+            return (lambda x: GMM.tokenize_w_location(x, fields=fields))
+        word_ocurrences = tweets_w_geo.flatMap(tokenize_with_defaults(self.options['fields']))
+
+        # In this line we group occurrences of words, fit a gmm to each word and bring it back to the local context
+        self.model = word_ocurrences.groupByKey().mapValues(GMM.fit_gmm).collectAsMap()
+
+        # TODO: Add filter of infrequent words before move to the local context
+        # Clean out words that occur less than a threshold number of times
+        words_to_delete = []
+        for word in self.model:
+            (gmm, error) = self.model[word]
+            if gmm is None:
+                words_to_delete.append(word)
+
+        for word in words_to_delete:
+            del self.model[word]
+
+    def test(self, data_path):
+        """ Test a pretrained model on a set of test data"""
+        if 'parquet' in data_path:
+            all_tweets = self.sqlCtx.parquetFile(data_path)
+        else:
+            all_tweets = self.sqlCtx.jsonFile(data_path)
+        all_tweets.registerTempTable('tweets')
+        tweets_w_geo = self.sqlCtx.sql('select geo, entities,  extended_entities, %s from tweets where geo.coordinates is not null' % ','.join(list(self.options['fields'])))
 
         # for each tweet calculate most likely position
         model = self.model
         # TODO: Explore using sc.broadcast instead of lexical closure to make this work
         def compute_error_w_model(model):
-            return (lambda x: GMM.compute_error(x, model=model))
+            return (lambda x: GMM.compute_error_using_model(x, model=model))
+
+        def tokenize_with_defaults(fields):
+            return (lambda x: GMM.tokenize(x, fields=fields))
 
         error_function_w_closure = compute_error_w_model(model)
-        errors = np.array(tweets_w_geo.map(tokenize).map(error_function_w_closure).collect())
+        errors = np.array(tweets_w_geo.map(tokenize_with_defaults(self.options['fields'])).map(error_function_w_closure).collect())
+        num_vals = len(errors)
         errors = errors[np.isnan(errors) == False]
 
         median_error = np.median(errors)
@@ -187,12 +192,14 @@ class GMM(Algorithm):
         print('Median Error', median_error)
         print('Mean Error: ', mean_error)
         # gather errors
-        final_results = {'median': median_error, 'mean': mean_error}
+        final_results = {'median': median_error, 'mean': mean_error, 'coverage': len(errors)/float(num_vals),
+                         'data_path':data_path, 'options': self.options}
         return final_results
 
     def load(self, input_fname):
+        """Load a pre-trained model"""
         self.model = pickle.load(open(input_fname, 'rb'))
 
-
     def save(self, output_fname):
+        """Save the current model for future use"""
         pickle.dump(self.model, open(output_fname, 'wb'))
