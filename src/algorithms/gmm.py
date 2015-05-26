@@ -6,6 +6,7 @@ import urlparse
 # local includes
 from src.algorithms.algorithm import Algorithm
 from src.utils.geo import haversine
+from src.utils.schema import get_twitter_schema
 
 class GMM(Algorithm):
     def __init__(self, context, sqlCtx, options, saved_model_fname=None):
@@ -31,7 +32,10 @@ class GMM(Algorithm):
         if 'text' in fields:
             text.append(inputRow.text.strip())
         if 'user.location' in fields:
-            text.append(inputRow.location.strip())
+            try:
+                text.append(inputRow.location.strip())
+            except:
+                text.append(inputRow.user.location.strip())
         text = ' '.join(text)
         # Get true location
         if inputRow.geo and inputRow.geo.type == 'Point':
@@ -113,7 +117,8 @@ class GMM(Algorithm):
         new_gmm = mixture.GMM(n_components=n_components, covariance_type=covariance_type)
         new_gmm.means_ = np.concatenate([g[0].means_ for g in gmms])
         new_gmm.covars_ = np.concatenate([g[0].covars_ for g in gmms])
-        new_gmm.weights_ = np.concatenate([g[0].weights_ * ((1/g[1])**4) for g in gmms])
+        weights = np.concatenate([g[0].weights_ * ((1/g[1])**4) for g in gmms])
+        new_gmm.weights_ = weights / np.sum(weights) # Normalize weights
         new_gmm.converged_ = True
         return new_gmm
 
@@ -142,7 +147,11 @@ class GMM(Algorithm):
         if 'parquet' in data_path:
             all_tweets = self.sqlCtx.parquetFile(data_path)
         else:
-            all_tweets = self.sqlCtx.jsonFile(data_path)
+            if 'json_path' in self.options:
+                schema = get_twitter_schema(self.options['json_path'])
+                all_tweets = self.sqlCtx.jsonFile(data_path, schema)
+            else:
+                all_tweets = self.sqlCtx.jsonFile(data_path)
         all_tweets.registerTempTable('tweets')
         tweets_w_geo = self.sqlCtx.sql('select geo, entities,  extended_entities, %s from tweets where geo.coordinates is not null' % ','.join(list(self.options['fields'])))
 
@@ -169,7 +178,11 @@ class GMM(Algorithm):
         if 'parquet' in data_path:
             all_tweets = self.sqlCtx.parquetFile(data_path)
         else:
-            all_tweets = self.sqlCtx.jsonFile(data_path)
+            if 'json_path' in self.options:
+                schema = get_twitter_schema(self.options['json_path'])
+                all_tweets = self.sqlCtx.jsonFile(data_path, schema)
+            else:
+                all_tweets = self.sqlCtx.jsonFile(data_path)
         all_tweets.registerTempTable('tweets')
         tweets_w_geo = self.sqlCtx.sql('select geo, entities,  extended_entities, %s from tweets where geo.coordinates is not null' % ','.join(list(self.options['fields'])))
 
