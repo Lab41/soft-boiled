@@ -4,7 +4,7 @@ class Algorithm:
     __metaclass__ = ABCMeta
 
     @abstractmethod
-    def __init__(self, options, saved_model_fname=None): pass
+    def __init__(self, context, sqlCtx, options, saved_model_fname=None): pass
 
 
     @abstractmethod
