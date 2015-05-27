@@ -7,6 +7,8 @@ import urlparse
 from src.algorithms.algorithm import Algorithm
 from src.utils.geo import haversine
 from src.utils.schema import get_twitter_schema
+import statsmodels.sandbox.distributions.extras as ext
+import math
 
 class GMM(Algorithm):
     def __init__(self, context, sqlCtx, options, saved_model_fname=None):
@@ -141,6 +143,20 @@ class GMM(Algorithm):
             return np.nan
         distance = haversine(best_lon, best_lat, true_lon, true_lat)
         return distance
+
+    @staticmethod
+    def prob_mass(model, upper_bound, lower_bound):
+        total_prob = 0
+        for i in range(0, len(model.weights_)):
+            val = ext.mvnormcdf(upper_bound, model.means_[i], model.covars_[i], lower_bound, maxpts=2000)
+            # below is necessary as a very rare occurance causes some guassians to have a result of nan
+            #(likely exeedingly low probability)
+            if math.isnan(val):
+                pass
+            else:
+                weighted_val = val * model.weights_[i]
+                total_prob += weighted_val
+        return total_prob
 
     def train(self, data_path):
         """ Train a set of GMMs for a given set of training data"""
