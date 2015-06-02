@@ -206,7 +206,7 @@ class GMM(Algorithm):
         print('Mean Error: ', mean_error)
         # gather errors
         final_results = {'median': median_error, 'mean': mean_error, 'coverage': len(errors)/float(num_vals),
-                         'data_path':data_path, 'options': self.options}
+                         'num_locs': len(errors), 'data_path':data_path, 'options': self.options}
         return final_results
 
     def load(self, input_fname):

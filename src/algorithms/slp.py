@@ -21,7 +21,10 @@ class SLP(Algorithm):
         self.sc = context
         self.sqlCtx = sqlCtx
 
-        #self.broadcast_options = self.sc.broadcast(options)
+        self.updated_locations = None
+        self.original_user_locations = None
+        self.filtered_edge_list = None
+        self.updated_locations_local = None
 
     @staticmethod
     def get_at_mentions(inputRow):
@@ -101,6 +104,7 @@ class SLP(Algorithm):
         # Filter users that will be in the test set
 
         filter_function = lambda (a,b): a[-1] not in options.value['hold_out']
+        self.all_user_locations = original_user_locations
         original_user_locations = original_user_locations.filter(filter_function)
         original_user_locations.cache()
         # Propagate locations
@@ -112,44 +116,64 @@ class SLP(Algorithm):
                 .map(lambda (a, b): b).filter(lambda (a,b): b is None).map(lambda (a,b): a)
         filtered_edge_list.cache()
 
-        # Keep track so number of original to control number of partitions through iterations
-        num_partitions = updated_locations.getNumPartitions()
+        self.updated_locations = updated_locations
+        self.original_user_locations = original_user_locations
+        self.filtered_edge_list = filtered_edge_list
 
         print 'Begining iterations'
         # Perform iterations
+        start_time = time.time()
         for i in range(self.options['num_iters']):
-            start_time = time.time()
-            adj_list_w_locations = filtered_edge_list.join(updated_locations).map(lambda (a,b): (b[0], b[1])).groupByKey()
-            new_locations = adj_list_w_locations.map(lambda (a,b): (a, median_point(b))).filter(lambda (a,b): b is not None)\
-                .filter(lambda (a,b): b[1] < 50).mapValues(lambda (a,b): a)
-            updated_locations = new_locations.union(original_user_locations).coalesce(num_partitions)
-            print 'Completed iteration: ', i,' in ', time.time()-start_time
+            if i + 1 == self.options['num_iters']:
+                self.do_iteration(True)
+            else:
+                self.do_iteration(False)
 
-        self.updated_locations = updated_locations
-        self.updated_locations_local = updated_locations.collect()
+        print 'Completed training', time.time() - start_time
 
-    def test(self, data_path):
+    def do_iteration(self, pull_to_local_ctx=False):
+        # Keep track so number of original to control number of partitions through iterations
+        num_partitions = self.updated_locations.getNumPartitions()
+
+        start_time = time.time()
+        adj_list_w_locations = self.filtered_edge_list.join(self.updated_locations).map(lambda (a,b): (b[0], b[1])).groupByKey()
+
+        new_locations = adj_list_w_locations.map(lambda (a,b): (a, median_point(b))).filter(lambda (a,b): b is not None)\
+            .filter(lambda (a,b): b[1] < 50).mapValues(lambda (a,b): a)
+
+        self.updated_locations = new_locations.union(self.original_user_locations).coalesce(num_partitions)
+        print 'Completed iteration in:', time.time()-start_time, self.updated_locations.count()
+
+        if pull_to_local_ctx:
+            print 'Pulling to local context'
+            self.updated_locations_local = self.updated_locations.collect()
+
+    def test(self, data_path, skip_load=False):
         # Push config to all nodes
         options = self.sc.broadcast(self.options)
-        if 'parquet' in data_path:
-            all_tweets = self.sqlCtx.parquetFile(data_path)
+        if skip_load and  self.all_user_locations is not None:
+            # If we've just trained then there is no need to go back to original data
+            original_user_locations = self.all_user_locations
         else:
-            if 'json_path' in self.options:
-                schema = get_twitter_schema(self.options['json_path'])
-                all_tweets = self.sqlCtx.jsonFile(data_path, schema)
+            if 'parquet' in data_path:
+                all_tweets = self.sqlCtx.parquetFile(data_path)
             else:
-                all_tweets = self.sqlCtx.jsonFile(data_path)
-        all_tweets.registerTempTable('tweets')
+                if 'json_path' in self.options:
+                    schema = get_twitter_schema(self.options['json_path'])
+                    all_tweets = self.sqlCtx.jsonFile(data_path, schema)
+                else:
+                    all_tweets = self.sqlCtx.jsonFile(data_path)
+            all_tweets.registerTempTable('tweets')
 
-        # Find Known user locations
-        # First map turns Row(id_str, coordinates) -> (id_str, coordinates)
-        # Group by key turns (id_str, coordinates -> (id_str, [coordinates1,coordinates2,..])
-        # Filter removes enteries without at least 3 locations
-        # Calculate the median point of the locations (id_str, [coordinates1,..]) -> (id_str, median_location)
-        # coalesce then reduces the number of partitions
-        original_user_locations = self.sqlCtx.sql('select user.id_str, geo.coordinates from tweets where geo.coordinates is not null')\
-            .map(lambda a: (a.id_str, a.coordinates))\
-            .groupByKey().filter(lambda (a,b):len(b) > 3).mapValues(median_point).mapValues(lambda (a,b): a).coalesce(300)
+            # Find Known user locations
+            # First map turns Row(id_str, coordinates) -> (id_str, coordinates)
+            # Group by key turns (id_str, coordinates -> (id_str, [coordinates1,coordinates2,..])
+            # Filter removes enteries without at least 3 locations
+            # Calculate the median point of the locations (id_str, [coordinates1,..]) -> (id_str, median_location)
+            # coalesce then reduces the number of partitions
+            original_user_locations = self.sqlCtx.sql('select user.id_str, geo.coordinates from tweets where geo.coordinates is not null')\
+                .map(lambda a: (a.id_str, a.coordinates))\
+                .groupByKey().filter(lambda (a,b):len(b) > 3).mapValues(median_point).mapValues(lambda (a,b): a).coalesce(300)
 
         # Filter users that might have been in training set
         filter_function = lambda (a,b): a[-1] in options.value['hold_out']
@@ -170,7 +194,7 @@ class SLP(Algorithm):
         print('Mean Error: ', mean_error)
         # gather errors
         final_results = {'median': median_error, 'mean': mean_error, 'coverage': len(errors)/float(number_locations),
-                         'data_path':data_path, 'options': self.options}
+                         'num_locs': number_locations, 'data_path':data_path, 'options': self.options}
         return final_results
 
 
