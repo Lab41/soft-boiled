@@ -144,7 +144,7 @@ class GMM(Algorithm):
 
     def train(self, data_path):
         """ Train a set of GMMs for a given set of training data"""
-        if 'parquet' in data_path:
+        if 'parquet' in data_path or 'use_parquet' in self.options and self.options['use_parquet']:
             all_tweets = self.sqlCtx.parquetFile(data_path)
         else:
             if 'json_path' in self.options:
@@ -175,7 +175,7 @@ class GMM(Algorithm):
 
     def test(self, data_path):
         """ Test a pretrained model on a set of test data"""
-        if 'parquet' in data_path:
+        if 'parquet' in data_path or 'use_parquet' in self.options and self.options['use_parquet']:
             all_tweets = self.sqlCtx.parquetFile(data_path)
         else:
             if 'json_path' in self.options:

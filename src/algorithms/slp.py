@@ -15,6 +15,13 @@ class SLP(Algorithm):
 
         if 'hold_out' not in options:
             self.options['hold_out'] = set(['9'])
+
+        if 'num_points_req' not in options:
+            self.options['num_points_req'] = 3
+
+        if 'dispersion_threshold' not in options:
+            self.options['dispersion_threshold'] = None # km
+
         self.model = None
         if saved_model_fname:
             self.load(saved_model_fname)
@@ -49,23 +56,30 @@ class SLP(Algorithm):
         return output_dict
 
     @staticmethod
-    def make_bidirectional(inputDict):
-        bidirectional_dict = {}
-        for src in inputDict:
-            for dst in inputDict[src]:
-                if dst in inputDict and src in inputDict[dst]:
-                    if src not in bidirectional_dict:
-                        bidirectional_dict[src] = collections.defaultdict(int)
-                    bidirectional_dict[src][dst] += 1
-                    if dst not in bidirectional_dict:
-                        bidirectional_dict[dst] = collections.defaultdict(int)
-                    bidirectional_dict[dst][src] += 1
-        return bidirectional_dict
+    def filter_non_bidirectional(edges):
+        """ Take in a list of edges and output number of bidirectional edges"""
+        edges = list(edges)
+        if len(edges) == 0:
+            return []
+
+        counts = [0, 0]
+        for src, dst in edges:
+            if src < dst:
+                counts[0] += 1
+            else:
+                counts[1] += 1
+        num_edges_to_output = min(counts)
+        src, dst = edges[0]
+        output_vals = []
+        for i in range(num_edges_to_output):
+            output_vals.append((src, dst))
+            output_vals.append((dst, src))
+        return output_vals
 
     def train(self, data_path):
         options = self.sc.broadcast(self.options)
         # TODO: Make the following parameters: table name, # locations required
-        if 'parquet' in data_path:
+        if 'parquet' in data_path or 'use_parquet' in self.options and self.options['use_parquet']:
             all_tweets = self.sqlCtx.parquetFile(data_path)
         else:
             if 'json_path' in self.options:
@@ -74,6 +88,10 @@ class SLP(Algorithm):
             else:
                 all_tweets = self.sqlCtx.jsonFile(data_path)
         all_tweets.registerTempTable('tweets')
+
+        def median_point_w_options_generator(num_points_req, dispersion_threshold):
+            return (lambda x: median_point(x, num_points_req=num_points_req, return_dispersion=False,
+                                           dispersion_treshold=dispersion_threshold))
 
         print 'Building edge list'
         # Build full_edge_list
@@ -85,8 +103,9 @@ class SLP(Algorithm):
         # coalesce then reduces the number of parittions in the edge list
         full_edge_list = self.sqlCtx.sql('select user.id_str, entities.user_mentions from tweets where entities.user_mentions is not null')\
             .flatMap(SLP.get_at_mentions).groupByKey()\
-            .filter(lambda (a,b): len(set(b)) > 1)\
-            .flatMap(lambda (a,b): list(b)).coalesce(300)
+            .flatMap(lambda (a,b): SLP.filter_non_bidirectional(b)).coalesce(100)
+            #.filter(lambda (a,b): len(set(b)) > 1)\
+            #.flatMap(lambda (a,b): list(b)).coalesce(100)
         full_edge_list.cache()
 
         print 'Finding known user locations'
@@ -96,9 +115,12 @@ class SLP(Algorithm):
         # Filter removes enteries without at least 3 locations
         # Calculate the median point of the locations (id_str, [coordinates1,..]) -> (id_str, median_location)
         # coalesce then reduces the number of partitions
+        median_point_w_options = median_point_w_options_generator(self.options['num_points_req'],self.options['dispersion_threshold'])
         original_user_locations = self.sqlCtx.sql('select user.id_str, geo.coordinates from tweets where geo.coordinates is not null')\
             .map(lambda a: (a.id_str, a.coordinates))\
-            .groupByKey().filter(lambda (a,b):len(b) > 3).mapValues(median_point).mapValues(lambda (a,b): a).coalesce(300)
+            .groupByKey().flatMapValues(lambda input_locations:
+                                            median_point_w_options(input_locations)).coalesce(100)
+            #filter(lambda (a,b):len(b) > 3).mapValues(median_point).mapValues(lambda (a,b): a).coalesce(300)
 
         print 'Filtering out user locations that end in:', ','.join(list(self.options['hold_out']))
         # Filter users that will be in the test set
@@ -113,7 +135,8 @@ class SLP(Algorithm):
         print 'Building a filtered edge list'
         # Build a filtered edge list so we don't ever try to approximate the known user locations
         filtered_edge_list = full_edge_list.keyBy(lambda (a, b): b).leftOuterJoin(updated_locations)\
-                .map(lambda (a, b): b).filter(lambda (a,b): b is None).map(lambda (a,b): a)
+                .flatMap(lambda (a,b): [b[0]] if b is not None else [])
+                #.map(lambda (a, b): b).filter(lambda (a,b): b is None).map(lambda (a,b): a)
         filtered_edge_list.cache()
 
         self.updated_locations = updated_locations
@@ -132,21 +155,31 @@ class SLP(Algorithm):
         print 'Completed training', time.time() - start_time
 
     def do_iteration(self, pull_to_local_ctx=False):
+        # Use closure to encode options for median value
+        def median_point_w_options_generator(num_points_req, dispersion_threshold):
+            return (lambda x: median_point(x, num_points_req=num_points_req, return_dispersion=False, dispersion_treshold=dispersion_threshold))
+
+
+
         # Keep track so number of original to control number of partitions through iterations
         num_partitions = self.updated_locations.getNumPartitions()
 
         start_time = time.time()
         adj_list_w_locations = self.filtered_edge_list.join(self.updated_locations).map(lambda (a,b): (b[0], b[1])).groupByKey()
 
-        new_locations = adj_list_w_locations.map(lambda (a,b): (a, median_point(b))).filter(lambda (a,b): b is not None)\
-            .filter(lambda (a,b): b[1] < 50).mapValues(lambda (a,b): a)
+        median_point_w_options = median_point_w_options_generator(self.options['num_points_req'],self.options['dispersion_threshold'])
+        new_locations = adj_list_w_locations.flatMapValues(lambda input_locations:median_point_w_options(input_locations))
+        #new_locations = adj_list_w_locations.map(lambda (a,b): (a, median_point(b))).filter(lambda (a,b): b is not None)\
+        #    .filter(lambda (a,b): b[1] < 50).mapValues(lambda (a,b): a)
 
         self.updated_locations = new_locations.union(self.original_user_locations).coalesce(num_partitions)
-        print 'Completed iteration in:', time.time()-start_time, self.updated_locations.count()
+        new_count = self.updated_locations.count()
+        print 'Completed iteration in:', time.time()-start_time, new_count
 
         if pull_to_local_ctx:
-            print 'Pulling to local context'
+            start_time = time.time()
             self.updated_locations_local = self.updated_locations.collect()
+            print 'Pulled to local context', time.time()-start_time
 
     def test(self, data_path, skip_load=False):
         # Push config to all nodes
@@ -155,7 +188,7 @@ class SLP(Algorithm):
             # If we've just trained then there is no need to go back to original data
             original_user_locations = self.all_user_locations
         else:
-            if 'parquet' in data_path:
+            if 'parquet' in data_path or 'use_parquet' in self.options and self.options['use_parquet']:
                 all_tweets = self.sqlCtx.parquetFile(data_path)
             else:
                 if 'json_path' in self.options:
@@ -171,9 +204,13 @@ class SLP(Algorithm):
             # Filter removes enteries without at least 3 locations
             # Calculate the median point of the locations (id_str, [coordinates1,..]) -> (id_str, median_location)
             # coalesce then reduces the number of partitions
+            def median_point_w_options_generator(num_points_req, dispersion_threshold):
+                return (lambda x: median_point(x, num_points_req=num_points_req, return_dispersion=False, dispersion_treshold=dispersion_threshold))
+
+            f = median_point_w_options_generator(self.options['num_points_req'],self.options['dispersion_threshold'])
             original_user_locations = self.sqlCtx.sql('select user.id_str, geo.coordinates from tweets where geo.coordinates is not null')\
                 .map(lambda a: (a.id_str, a.coordinates))\
-                .groupByKey().filter(lambda (a,b):len(b) > 3).mapValues(median_point).mapValues(lambda (a,b): a).coalesce(300)
+                .groupByKey().flatMapValues(lambda input_locations:f(input_locations)).coalesce(300)
 
         # Filter users that might have been in training set
         filter_function = lambda (a,b): a[-1] in options.value['hold_out']
