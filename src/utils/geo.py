@@ -18,26 +18,51 @@ def haversine(lon1, lat1, lon2, lat2):
     c = 2 * asin(min(1, sqrt(a))) # Added min to protect against roundoff errors for nearly antipodal locations
     return c * EARTH_RADIUS
 
-def median_point(points):
+def median_point(points, num_points_req=3, return_dispersion=True, dispersion_treshold=None):
     """ Return the median point and the dispersion"""
-    if len(points) < 3:
-        return None
+    local_cache = {}
+    if len(points) < num_points_req:
+        return []
     points = list(points)
     min_distance = None
     current_errors = None
     min_index = None
     for i in range(len(points)):
-        distance_sum = 0
         errors = []
         for j in range(len(points)):
-            error = haversine(points[j][1], points[j][0], points[i][1], points[i][0])
-            errors.append(error)
+            if i != j: # Don't compute self distance
+                p1 = points[i]
+                p2 = points[j]
+
+                # Cache canonical ordering
+                if p1 < p2:
+                    point_tuple = (points[i][1], points[i][0], points[j][1], points[j][0])
+                else:
+                    point_tuple = (points[j][1], points[j][0], points[i][1], points[i][0])
+
+                # Pull from cache or calculate
+                if point_tuple in local_cache:
+                    error = local_cache[point_tuple]
+                elif p1 == p2:
+                    error = 0
+                else:
+                    error = haversine(points[j][1], points[j][0], points[i][1], points[i][0])
+                    local_cache[point_tuple] = error
+                errors.append(error)
         distance_sum = sum(errors)
         if min_distance is None or distance_sum < min_distance:
             min_distance = distance_sum
             current_errors = errors
             min_index = i
-    return (points[min_index], np.median(current_errors))
+    dispersion = np.median(current_errors)
+    if dispersion_treshold:
+        if dispersion > dispersion_treshold:
+            return []
+
+    if return_dispersion:
+        return [(points[min_index], dispersion)]
+    else:
+        return [points[min_index]]
 
 def median_point2(points):
     """ Return the median point and the dispersion"""
