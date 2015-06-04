@@ -95,7 +95,7 @@ class SLP(Algorithm):
         # The 2nd flatMap turns filters out non-bidirectional and
         #    transforms to[(canoncial order, [(src,dst), (src, dst)..), ...] -> [(src1, dst1), (src1, dst2)]
         # coalesce then reduces the number of parittions in the edge list
-        full_edge_list = self.sqlCtx.sql('select user.id_str, entities.user_mentions from tweets where entities.user_mentions is not null')\
+        full_edge_list = self.sqlCtx.sql('select user.id_str, entities.user_mentions from tweets where size(entities.user_mentions) > 0')\
             .flatMap(SLP.get_at_mentions).groupByKey()\
             .flatMap(lambda (a,b): SLP.filter_non_bidirectional(b)).coalesce(300)
         full_edge_list.cache()
