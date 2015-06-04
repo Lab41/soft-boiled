@@ -7,7 +7,7 @@ from mpl_toolkits.basemap import Basemap
 
 
 @staticmethod
-def plot_gmm(gmm, true_ll=False):
+def plot_gmm(gmm, true_ll=None, percent=None):
     """Plots the contour map of a GMM on top of a world map
     Partially from: http://matplotlib.org/basemap/users/examples.html
     Will also plot the best estimated location as well as a true location if passed in"""
@@ -19,6 +19,19 @@ def plot_gmm(gmm, true_ll=False):
     XX = np.array([X.ravel(), Y.ravel()]).T
     #Obtains the per-sample log probabilities of the data under the model
     Z = -gmm.score_samples(XX)[0]
+
+    if percent:
+        Z = np.exp2(gmm.score_samples(XX)[0])
+        target = np.sum(Z)*percent
+        z_sorted = sorted(Z, reverse=True)
+        i = 0
+        sum = 0
+        while sum < target:
+            sum += z_sorted[i]
+            i += 1
+        Z[Z < z_sorted[i]]  = 0
+        Z = -np.log(Z)
+
     Z = Z.reshape(X.shape)
 
     #set up and draw the world map
