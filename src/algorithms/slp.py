@@ -74,6 +74,15 @@ class SLP(Algorithm):
         # TODO: Make the following parameters: table name, # locations required
         if 'parquet' in data_path or 'use_parquet' in self.options and self.options['use_parquet']:
             all_tweets = self.sqlCtx.parquetFile(data_path)
+        elif 'use_zip' in self.options and self.options['use_zip']:
+            rdd_vals_only = self.sc.newAPIHadoopFile(data_path, 'com.cotdp.hadoop.ZipFileInputFormat',
+                                      'org.apache.hadoop.io.LongWritable',
+                                      'org.apache.hadoop.io.Text').map(lambda (a,b): b)
+            if 'json_path' in self.options:
+                schema = get_twitter_schema(self.options['json_path'])
+                all_tweets = self.sqlCtx.jsonRDD(rdd_vals_only, schema=schema)
+            else:
+                all_tweets = self.sqlCtx.jsonRDD(rdd_vals_only)
         else:
             if 'json_path' in self.options:
                 schema = get_twitter_schema(self.options['json_path'])
@@ -146,7 +155,7 @@ class SLP(Algorithm):
         # Use closure to encode options for median value
         def median_point_w_options_generator(num_points_req, dispersion_threshold):
             return (lambda x: median_point(x, num_points_req=num_points_req, return_dispersion=False,
-                                           dispersion_treshold=dispersion_threshold))
+                                           dispersion_treshold=dispersion_threshold, use_usr_ids=True))
 
         # Keep track so number of original to control number of partitions through iterations
         num_partitions = self.updated_locations.getNumPartitions()
@@ -154,7 +163,7 @@ class SLP(Algorithm):
         start_time = time.time()
         # Create edge list (src -> dst) where we attach known locations to "src"  and then group by dst
         # end result is is [(dst, [all known locations of neighbors])]
-        adj_list_w_locations = self.filtered_edge_list.join(self.updated_locations).map(lambda (a,b): (b[0], b[1])).groupByKey()
+        adj_list_w_locations = self.filtered_edge_list.join(self.updated_locations).map(lambda (a,b): (b[0], (b[1],a))).groupByKey()
 
         # For each "dst" calculate median point of known neighbors
         median_point_w_options = median_point_w_options_generator(self.options['num_points_req'],self.options['dispersion_threshold'])
@@ -184,6 +193,15 @@ class SLP(Algorithm):
         else:
             if 'parquet' in data_path or 'use_parquet' in self.options and self.options['use_parquet']:
                 all_tweets = self.sqlCtx.parquetFile(data_path)
+            elif 'use_zip' in self.options and self.options['use_zip']:
+                rdd_vals_only = self.sc.newAPIHadoopFile(data_path, 'com.cotdp.hadoop.ZipFileInputFormat',
+                                          'org.apache.hadoop.io.LongWritable',
+                                          'org.apache.hadoop.io.Text').map(lambda (a,b): b)
+                if 'json_path' in self.options:
+                    schema = get_twitter_schema(self.options['json_path'])
+                    all_tweets = self.sqlCtx.jsonRDD(rdd_vals_only, schema=schema)
+                else:
+                    all_tweets = self.sqlCtx.jsonRDD(rdd_vals_only)
             else:
                 if 'json_path' in self.options:
                     schema = get_twitter_schema(self.options['json_path'])
