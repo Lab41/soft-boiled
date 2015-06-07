@@ -185,7 +185,7 @@ class GMM(Algorithm):
                 all_tweets = self.sqlCtx.jsonFile(data_path)
         all_tweets.registerTempTable('tweets')
         tweets_w_geo = self.sqlCtx.sql('select geo, entities,  extended_entities, %s from tweets where geo.coordinates is not null %s'
-                                       % (','.join(list(self.options['fields']))), self.options['where_clause'])
+                                       % (','.join(list(self.options['fields'])), self.options['where_clause']))
 
         def tokenize_with_defaults(fields):
             return (lambda x: GMM.tokenize_w_location(x, fields=fields))
@@ -226,7 +226,7 @@ class GMM(Algorithm):
                 all_tweets = self.sqlCtx.jsonFile(data_path)
         all_tweets.registerTempTable('tweets')
         tweets_w_geo = self.sqlCtx.sql('select geo, entities,  extended_entities, %s from tweets where geo.coordinates is not null %s'
-                                       % (','.join(list(self.options['fields']))), self.options['where_clause'])
+                                       % (','.join(list(self.options['fields'])), self.options['where_clause']))
 
         # for each tweet calculate most likely position
         model = self.model
