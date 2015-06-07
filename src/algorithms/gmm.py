@@ -15,6 +15,12 @@ class GMM(Algorithm):
         self.options = options
         if 'fields' not in options:
             self.options['fields'] = set(['text', 'user.location'])
+
+        if 'where_clause' in options:
+            if not self.options['where_clause'].strip().startswith('and'):
+                self.options['where_clause'] = 'and ' + self.options['where_clause'].strip()
+        else:
+            self.options['where_clause'] = ''
         self.model = None
         if saved_model_fname:
             self.load(saved_model_fname)
@@ -162,6 +168,15 @@ class GMM(Algorithm):
         """ Train a set of GMMs for a given set of training data"""
         if 'parquet' in data_path or 'use_parquet' in self.options and self.options['use_parquet']:
             all_tweets = self.sqlCtx.parquetFile(data_path)
+        elif 'use_zip' in self.options and self.options['use_zip']:
+            rdd_vals_only = self.sc.newAPIHadoopFile(data_path, 'com.cotdp.hadoop.ZipFileInputFormat',
+                                      'org.apache.hadoop.io.LongWritable',
+                                      'org.apache.hadoop.io.Text').map(lambda (a,b): b)
+            if 'json_path' in self.options:
+                schema = get_twitter_schema(self.options['json_path'])
+                all_tweets = self.sqlCtx.jsonRDD(rdd_vals_only, schema=schema)
+            else:
+                all_tweets = self.sqlCtx.jsonRDD(rdd_vals_only)
         else:
             if 'json_path' in self.options:
                 schema = get_twitter_schema(self.options['json_path'])
@@ -169,7 +184,8 @@ class GMM(Algorithm):
             else:
                 all_tweets = self.sqlCtx.jsonFile(data_path)
         all_tweets.registerTempTable('tweets')
-        tweets_w_geo = self.sqlCtx.sql('select geo, entities,  extended_entities, %s from tweets where geo.coordinates is not null' % ','.join(list(self.options['fields'])))
+        tweets_w_geo = self.sqlCtx.sql('select geo, entities,  extended_entities, %s from tweets where geo.coordinates is not null %s'
+                                       % (','.join(list(self.options['fields'])), self.options['where_clause']))
 
         def tokenize_with_defaults(fields):
             return (lambda x: GMM.tokenize_w_location(x, fields=fields))
@@ -193,6 +209,15 @@ class GMM(Algorithm):
         """ Test a pretrained model on a set of test data"""
         if 'parquet' in data_path or 'use_parquet' in self.options and self.options['use_parquet']:
             all_tweets = self.sqlCtx.parquetFile(data_path)
+        elif 'use_zip' in self.options and self.options['use_zip']:
+            rdd_vals_only = self.sc.newAPIHadoopFile(data_path, 'com.cotdp.hadoop.ZipFileInputFormat',
+                                      'org.apache.hadoop.io.LongWritable',
+                                      'org.apache.hadoop.io.Text').map(lambda (a,b): b)
+            if 'json_path' in self.options:
+                schema = get_twitter_schema(self.options['json_path'])
+                all_tweets = self.sqlCtx.jsonRDD(rdd_vals_only, schema=schema)
+            else:
+                all_tweets = self.sqlCtx.jsonRDD(rdd_vals_only)
         else:
             if 'json_path' in self.options:
                 schema = get_twitter_schema(self.options['json_path'])
@@ -200,7 +225,8 @@ class GMM(Algorithm):
             else:
                 all_tweets = self.sqlCtx.jsonFile(data_path)
         all_tweets.registerTempTable('tweets')
-        tweets_w_geo = self.sqlCtx.sql('select geo, entities,  extended_entities, %s from tweets where geo.coordinates is not null' % ','.join(list(self.options['fields'])))
+        tweets_w_geo = self.sqlCtx.sql('select geo, entities,  extended_entities, %s from tweets where geo.coordinates is not null %s'
+                                       % (','.join(list(self.options['fields'])), self.options['where_clause']))
 
         # for each tweet calculate most likely position
         model = self.model

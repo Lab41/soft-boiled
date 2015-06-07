@@ -18,11 +18,24 @@ def haversine(lon1, lat1, lon2, lat2):
     c = 2 * asin(min(1, sqrt(a))) # Added min to protect against roundoff errors for nearly antipodal locations
     return c * EARTH_RADIUS
 
-def median_point(points, num_points_req=3, return_dispersion=True, dispersion_treshold=None):
+def median_point(points, num_points_req=3, return_dispersion=True, dispersion_treshold=None, use_usr_ids=False):
     """ Return the median point and the dispersion"""
     local_cache = {}
-    if len(points) < num_points_req:
-        return []
+    if use_usr_ids:
+        # If we've passed in [(ll, usr_id), (ll, usr_id)] check that we have the right number of user ids instead
+        # of just points
+        actual_points = []
+        user_ids = set()
+        for ll, src in points:
+            user_ids.add(src)
+            actual_points.append(ll)
+        if len(user_ids) < num_points_req:
+            return []
+        points = actual_points
+    else:
+        # Just make sure we have enough points
+        if len(points) < num_points_req:
+            return []
     points = list(points)
     min_distance = None
     current_errors = None
