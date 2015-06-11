@@ -19,8 +19,17 @@ class SLP(Algorithm):
         if 'num_points_req' not in options:
             self.options['num_points_req'] = 3
 
+        if 'num_points_req_for_known' not in options:
+            self.options['num_points_req_for_known'] = self.options['num_points_req']
+
         if 'dispersion_threshold' not in options:
             self.options['dispersion_threshold'] = None # km
+
+        if 'dispersion_threshold_for_known' not in options:
+            self.options['dispersion_threshold_for_known'] = None
+
+        if 'temp_table_name' not in options:
+            self.options['temp_table_name'] = 'tweets'
 
         self.model = None
         if saved_model_fname:
@@ -32,6 +41,8 @@ class SLP(Algorithm):
         self.original_user_locations = None
         self.filtered_edge_list = None
         self.updated_locations_local = None
+        self.hasRegisteredTable = False
+        self.iterations_completed = 0
 
     @staticmethod
     def get_at_mentions(inputRow):
@@ -69,7 +80,7 @@ class SLP(Algorithm):
             output_vals.append((dst, src))
         return output_vals
 
-    def train(self, data_path):
+    def load(self, data_path):
         options = self.sc.broadcast(self.options)
         # TODO: Make the following parameters: table name, # locations required
         if 'parquet' in data_path or 'use_parquet' in self.options and self.options['use_parquet']:
@@ -89,7 +100,16 @@ class SLP(Algorithm):
                 all_tweets = self.sqlCtx.jsonFile(data_path, schema)
             else:
                 all_tweets = self.sqlCtx.jsonFile(data_path)
-        all_tweets.registerTempTable('tweets')
+
+        self.all_tweets = all_tweets
+        return all_tweets
+
+    def train(self, all_tweets):
+        options = self.sc.broadcast(self.options)
+        if not self.hasRegisteredTable:
+            all_tweets.registerTempTable(self.options['temp_table_name'])
+            self.hasRegisteredTable = True
+
 
         # Helper function exploits python closure to pass options to map tasks
         def median_point_w_options_generator(num_points_req, dispersion_threshold):
@@ -104,7 +124,8 @@ class SLP(Algorithm):
         # The 2nd flatMap turns filters out non-bidirectional and
         #    transforms to[(canoncial order, [(src,dst), (src, dst)..), ...] -> [(src1, dst1), (src1, dst2)]
         # coalesce then reduces the number of parittions in the edge list
-        full_edge_list = self.sqlCtx.sql('select user.id_str, entities.user_mentions from tweets where size(entities.user_mentions) > 0')\
+        full_edge_list = self.sqlCtx.sql('select user.id_str, entities.user_mentions from %s where size(entities.user_mentions) > 0'%\
+            self.options['temp_table_name'])\
             .flatMap(SLP.get_at_mentions).groupByKey()\
             .flatMap(lambda (a,b): SLP.filter_non_bidirectional(b)).coalesce(300)
         full_edge_list.cache()
@@ -115,8 +136,10 @@ class SLP(Algorithm):
         # Group by key turns (id_str, coordinates -> (id_str, [coordinates1,coordinates2,..])
         # Calculate the median point of the locations (id_str, [coordinates1,..]) -> (id_str, median_location)
         # coalesce then reduces the number of partitions
-        median_point_w_options = median_point_w_options_generator(self.options['num_points_req'],self.options['dispersion_threshold'])
-        original_user_locations = self.sqlCtx.sql('select user.id_str, geo.coordinates from tweets where geo.coordinates is not null')\
+        median_point_w_options = median_point_w_options_generator(self.options['num_points_req_for_known'],\
+                                                                  self.options['dispersion_threshold_for_known'])
+        original_user_locations = self.sqlCtx.sql('select user.id_str, geo.coordinates from %s where geo.coordinates is not null'%\
+            self.options['temp_table_name'])\
             .map(lambda a: (a.id_str, a.coordinates))\
             .groupByKey().flatMapValues(lambda input_locations:
                                             median_point_w_options(input_locations)).coalesce(300)
@@ -178,37 +201,24 @@ class SLP(Algorithm):
         else:
             new_count = self.updated_locations.count()
         print 'Completed iteration in:', time.time()-start_time, new_count
-        
+        self.iterations_completed += 1
+
         if pull_to_local_ctx:
             start_time = time.time()
             self.updated_locations_local = self.updated_locations.collect()
             print 'Pulled to local context', time.time()-start_time
 
-    def test(self, data_path, skip_load=False):
+    def test(self, all_tweets, skip_load=False):
         # Push config to all nodes
         options = self.sc.broadcast(self.options)
+        if not self.hasRegisteredTable:
+            all_tweets.registerTempTable(self.options['temp_table_name'])
+            self.hasRegisteredTable = True
+
         if skip_load and  self.all_user_locations is not None:
             # If we've just trained then there is no need to go back to original data
             original_user_locations = self.all_user_locations
         else:
-            if 'parquet' in data_path or 'use_parquet' in self.options and self.options['use_parquet']:
-                all_tweets = self.sqlCtx.parquetFile(data_path)
-            elif 'use_zip' in self.options and self.options['use_zip']:
-                rdd_vals_only = self.sc.newAPIHadoopFile(data_path, 'com.cotdp.hadoop.ZipFileInputFormat',
-                                          'org.apache.hadoop.io.LongWritable',
-                                          'org.apache.hadoop.io.Text').map(lambda (a,b): b)
-                if 'json_path' in self.options:
-                    schema = get_twitter_schema(self.options['json_path'])
-                    all_tweets = self.sqlCtx.jsonRDD(rdd_vals_only, schema=schema)
-                else:
-                    all_tweets = self.sqlCtx.jsonRDD(rdd_vals_only)
-            else:
-                if 'json_path' in self.options:
-                    schema = get_twitter_schema(self.options['json_path'])
-                    all_tweets = self.sqlCtx.jsonFile(data_path, schema)
-                else:
-                    all_tweets = self.sqlCtx.jsonFile(data_path)
-            all_tweets.registerTempTable('tweets')
 
             # Find Known user locations
             # First map turns Row(id_str, coordinates) -> (id_str, coordinates)
@@ -220,7 +230,8 @@ class SLP(Algorithm):
                 return (lambda x: median_point(x, num_points_req=num_points_req, return_dispersion=False, dispersion_treshold=dispersion_threshold))
 
             f = median_point_w_options_generator(self.options['num_points_req'],self.options['dispersion_threshold'])
-            original_user_locations = self.sqlCtx.sql('select user.id_str, geo.coordinates from tweets where geo.coordinates is not null')\
+            original_user_locations = self.sqlCtx.sql('select user.id_str, geo.coordinates from %s where geo.coordinates is not null'%\
+                self.options['temp_table_name'])\
                 .map(lambda a: (a.id_str, a.coordinates))\
                 .groupByKey().flatMapValues(lambda input_locations:f(input_locations)).coalesce(300)
 
@@ -243,7 +254,9 @@ class SLP(Algorithm):
         print('Mean Error: ', mean_error)
         # gather errors
         final_results = {'median': median_error, 'mean': mean_error, 'coverage': len(errors)/float(number_locations),
-                         'num_locs': number_locations, 'data_path':data_path, 'options': self.options}
+                         'num_locs': number_locations,
+                         'iterations_completed': self.iterations_completed, 'options': self.options}
+
         return final_results
 
 

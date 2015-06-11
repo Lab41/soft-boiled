@@ -21,7 +21,13 @@ class GMM(Algorithm):
                 self.options['where_clause'] = 'and ' + self.options['where_clause'].strip()
         else:
             self.options['where_clause'] = ''
+
+        if 'temp_table_name' not in options:
+            self.options['temp_table_name'] = 'tweets'
+
         self.model = None
+        self.hasRegisteredTable = False
+
         if saved_model_fname:
             self.load(saved_model_fname)
         self.sc = context
@@ -164,8 +170,9 @@ class GMM(Algorithm):
                 total_prob += weighted_val
         return total_prob
 
-    def train(self, data_path):
-        """ Train a set of GMMs for a given set of training data"""
+    def load(self, data_path):
+        options = self.sc.broadcast(self.options)
+        # TODO: Make the following parameters: table name, # locations required
         if 'parquet' in data_path or 'use_parquet' in self.options and self.options['use_parquet']:
             all_tweets = self.sqlCtx.parquetFile(data_path)
         elif 'use_zip' in self.options and self.options['use_zip']:
@@ -183,9 +190,19 @@ class GMM(Algorithm):
                 all_tweets = self.sqlCtx.jsonFile(data_path, schema)
             else:
                 all_tweets = self.sqlCtx.jsonFile(data_path)
-        all_tweets.registerTempTable('tweets')
-        tweets_w_geo = self.sqlCtx.sql('select geo, entities,  extended_entities, %s from tweets where geo.coordinates is not null %s'
-                                       % (','.join(list(self.options['fields'])), self.options['where_clause']))
+
+        self.all_tweets = all_tweets
+        return all_tweets
+
+    def train(self, all_tweets):
+        """ Train a set of GMMs for a given set of training data"""
+        if not self.hasRegisteredTable:
+            all_tweets.registerTempTable(self.options['temp_table_name'])
+            self.hasRegisteredTable = True
+
+        tweets_w_geo = self.sqlCtx.sql('select geo, entities,  extended_entities, %s from %s where geo.coordinates is not null %s'
+                                       % (','.join(list(self.options['fields'])), self.options['temp_table_name'],
+                                          self.options['where_clause']))
 
         def tokenize_with_defaults(fields):
             return (lambda x: GMM.tokenize_w_location(x, fields=fields))
@@ -205,28 +222,15 @@ class GMM(Algorithm):
         for word in words_to_delete:
             del self.model[word]
 
-    def test(self, data_path):
+    def test(self, all_tweets):
         """ Test a pretrained model on a set of test data"""
-        if 'parquet' in data_path or 'use_parquet' in self.options and self.options['use_parquet']:
-            all_tweets = self.sqlCtx.parquetFile(data_path)
-        elif 'use_zip' in self.options and self.options['use_zip']:
-            rdd_vals_only = self.sc.newAPIHadoopFile(data_path, 'com.cotdp.hadoop.ZipFileInputFormat',
-                                      'org.apache.hadoop.io.LongWritable',
-                                      'org.apache.hadoop.io.Text').map(lambda (a,b): b)
-            if 'json_path' in self.options:
-                schema = get_twitter_schema(self.options['json_path'])
-                all_tweets = self.sqlCtx.jsonRDD(rdd_vals_only, schema=schema)
-            else:
-                all_tweets = self.sqlCtx.jsonRDD(rdd_vals_only)
-        else:
-            if 'json_path' in self.options:
-                schema = get_twitter_schema(self.options['json_path'])
-                all_tweets = self.sqlCtx.jsonFile(data_path, schema)
-            else:
-                all_tweets = self.sqlCtx.jsonFile(data_path)
-        all_tweets.registerTempTable('tweets')
-        tweets_w_geo = self.sqlCtx.sql('select geo, entities,  extended_entities, %s from tweets where geo.coordinates is not null %s'
-                                       % (','.join(list(self.options['fields'])), self.options['where_clause']))
+        if not self.hasRegisteredTable:
+            all_tweets.registerTempTable(self.options['temp_table_name'])
+            self.hasRegisteredTable = True
+
+        tweets_w_geo = self.sqlCtx.sql('select geo, entities,  extended_entities, %s from %s where geo.coordinates is not null %s'
+                                       % (','.join(list(self.options['fields'])), self.options['temp_table_name'],
+                                          self.options['where_clause']))
 
         # for each tweet calculate most likely position
         model = self.model
@@ -248,7 +252,7 @@ class GMM(Algorithm):
         print('Mean Error: ', mean_error)
         # gather errors
         final_results = {'median': median_error, 'mean': mean_error, 'coverage': len(errors)/float(num_vals),
-                         'num_locs': len(errors), 'data_path':data_path, 'options': self.options}
+                         'num_locs': len(errors), 'options': self.options}
         return final_results
 
     def load(self, input_fname):
