@@ -14,7 +14,7 @@ from src.algorithms.slp import SLP
 tweets = sqlCtx.parquetFile('hdfs:///post_etl_datasets/twitter')
 
 # Configure options object
-options = {'dispersion_threshold':dispersion, 'num_points_req':3, 
+options = {'dispersion_threshold':dispersion, 'num_located_neighbors_req':3, 
                    'num_iters':5, 'hold_out':holdout}
 # Create algorithm with options
 slp = SLP(sc, sqlCtx, options)
@@ -30,8 +30,11 @@ slp.save('/my/local/path/filename.pkl')
 ##### Related to calculating the median point amongst a collection of points:
 ***dispersion_threshold***: This is the maximum median distance in km a point can be from the remaining points and still estimate a location
 
-***num_points_required***: This is the number of locations needed before we will estimate a median location
+***num_points_req_for_known***:  Number of geotagged posts that a user must have to be included in ground truth. 
 
+***home_radius_for_known***: Median distance in km that num_points_req_for_known must be under from each other.
+
+***num_located_neighbors_req***: The min number of vertex neighbors with known locations needed before we will calculate a median location to assign an unlocatd user.
 
 ##### Related to the actual label propagation:
 ***num_iters***: This controls the number of iterations of label propagation performed

@@ -16,17 +16,17 @@ class SLP(Algorithm):
         if 'hold_out' not in options:
             self.options['hold_out'] = set(['9'])
 
-        if 'num_points_req' not in options:
-            self.options['num_points_req'] = 3
+        if 'num_located_neighbors_req' not in options:
+            self.options['num_located_neighbors_req'] = 3
 
         if 'num_points_req_for_known' not in options:
-            self.options['num_points_req_for_known'] = self.options['num_points_req']
+            self.options['num_points_req_for_known'] = self.options['num_located_neighbors_req']
 
         if 'dispersion_threshold' not in options:
             self.options['dispersion_threshold'] = None # km
 
-        if 'dispersion_threshold_for_known' not in options:
-            self.options['dispersion_threshold_for_known'] = None
+        if 'home_radius_for_known' not in options:
+            self.options['home_radius_for_known'] = None
 
         if 'temp_table_name' not in options:
             self.options['temp_table_name'] = 'tweets'
@@ -112,9 +112,9 @@ class SLP(Algorithm):
 
 
         # Helper function exploits python closure to pass options to map tasks
-        def median_point_w_options_generator(num_points_req, dispersion_threshold):
-            return (lambda x: median_point(x, num_points_req=num_points_req, return_dispersion=False,
-                                           dispersion_treshold=dispersion_threshold))
+        def median_point_w_options_generator(num_points_req_for_known, home_radius_for_known):
+            return (lambda x: median_point(x, num_points_req=num_points_req_for_known, return_dispersion=False,
+                                           dispersion_treshold=home_radius_for_known))
 
         print 'Building edge list'
         # Build full_edge_list
@@ -137,7 +137,7 @@ class SLP(Algorithm):
         # Calculate the median point of the locations (id_str, [coordinates1,..]) -> (id_str, median_location)
         # coalesce then reduces the number of partitions
         median_point_w_options = median_point_w_options_generator(self.options['num_points_req_for_known'],\
-                                                                  self.options['dispersion_threshold_for_known'])
+                                                                  self.options['home_radius_for_known'])
         original_user_locations = self.sqlCtx.sql('select user.id_str, geo.coordinates from %s where geo.coordinates is not null'%\
             self.options['temp_table_name'])\
             .map(lambda a: (a.id_str, a.coordinates))\
@@ -176,8 +176,8 @@ class SLP(Algorithm):
 
     def do_iteration(self, pull_to_local_ctx=False):
         # Use closure to encode options for median value
-        def median_point_w_options_generator(num_points_req, dispersion_threshold):
-            return (lambda x: median_point(x, num_points_req=num_points_req, return_dispersion=False,
+        def median_point_w_options_generator(num_located_neighbors_req, dispersion_threshold):
+            return (lambda x: median_point(x, num_points_req=num_located_neighbors_req, return_dispersion=False,
                                            dispersion_treshold=dispersion_threshold, use_usr_ids=True))
 
         # Keep track so number of original to control number of partitions through iterations
@@ -189,7 +189,7 @@ class SLP(Algorithm):
         adj_list_w_locations = self.filtered_edge_list.join(self.updated_locations).map(lambda (a,b): (b[0], (b[1],a))).groupByKey()
 
         # For each "dst" calculate median point of known neighbors
-        median_point_w_options = median_point_w_options_generator(self.options['num_points_req'],self.options['dispersion_threshold'])
+        median_point_w_options = median_point_w_options_generator(self.options['num_located_neighbors_req'],self.options['dispersion_threshold'])
         new_locations = adj_list_w_locations.flatMapValues(lambda input_locations:median_point_w_options(input_locations))
 
         # Join back in original locations to estimated locations to get all locations
