@@ -2,6 +2,7 @@ import collections
 import time
 import numpy as np
 import pickle
+import pandas as pd
 # local includes
 from src.algorithms.algorithm import Algorithm
 from src.utils.geo import haversine, median_point
@@ -43,6 +44,7 @@ class SLP(Algorithm):
         self.updated_locations_local = None
         self.hasRegisteredTable = False
         self.iterations_completed = 0
+        self.predictions_curve = None
 
     @staticmethod
     def get_at_mentions(inputRow):
@@ -104,7 +106,7 @@ class SLP(Algorithm):
         self.all_tweets = all_tweets
         return all_tweets
 
-    def train(self, all_tweets):
+    def train(self, all_tweets, predictions_curve=None):
         options = self.sc.broadcast(self.options)
         if not self.hasRegisteredTable:
             all_tweets.registerTempTable(self.options['temp_table_name'])
@@ -113,7 +115,7 @@ class SLP(Algorithm):
 
         # Helper function exploits python closure to pass options to map tasks
         def median_point_w_options_generator(num_points_req_for_known, home_radius_for_known):
-            return (lambda x: median_point(x, num_points_req=num_points_req_for_known, return_dispersion=False,
+            return (lambda x: median_point(x, num_points_req=num_points_req_for_known, return_dispersion=True,
                                            dispersion_treshold=home_radius_for_known))
 
         print 'Building edge list'
@@ -153,6 +155,31 @@ class SLP(Algorithm):
         # Propagate locations
         updated_locations = original_user_locations
 
+        if predictions_curve is None:
+            print 'Building the error estimation curve'
+            # For the users in the full edge list, determine all neighbors median point of the neighbors
+            # Define a new median points generator which now returns the neighbor dispersion and standard dev of the dispersion
+            def median_point_w_options_generator(num_located_neighbors_req, dispersion_threshold):
+                return (lambda x: median_point(x, num_points_req=num_located_neighbors_req, return_dispersion=True,
+                                               dispersion_treshold=dispersion_threshold, use_usr_ids=True))
+            median_point_w_options = median_point_w_options_generator(self.options['num_points_req_for_known'],\
+                                                                      self.options['home_radius_for_known'])
+
+            user_location_only = original_user_locations.map(lambda (a,b): (a, b[0]))
+            adj_list_w_locations = full_edge_list.join(user_location_only).map(lambda (a,b): (b[0], (b[1],a))).groupByKey()
+            neighbor_locations = adj_list_w_locations.flatMapValues(lambda input_locations:median_point_w_options(input_locations))
+            network_info = user_location_only.join(neighbor_locations)
+
+            std_mults = network_info.map\
+                (lambda (id_str,(lat0,(lat1, disp, mean_dis, std_dev))) : (haversine(lat0[1], lat0[0], lat1[1], lat1[0]) - disp)/std_dev)
+
+            std_mults_loc = std_mults.collect()
+            sorted_vals = np.sort(std_mults_loc)
+            yvals=np.arange(len(sorted_vals))/float(len(sorted_vals))
+            self.predictions_curve = pd.DataFrame(np.column_stack((sorted_vals, yvals)), columns=["std_range", "pct_within_med"])
+        else:
+            self.predictions_curve = predictions_curve
+
         print 'Building a filtered edge list'
         # Build a filtered edge list so we don't ever try to approximate the known user locations
         filtered_edge_list = full_edge_list.keyBy(lambda (a, b): b).leftOuterJoin(updated_locations)\
@@ -177,7 +204,7 @@ class SLP(Algorithm):
     def do_iteration(self, pull_to_local_ctx=False):
         # Use closure to encode options for median value
         def median_point_w_options_generator(num_located_neighbors_req, dispersion_threshold):
-            return (lambda x: median_point(x, num_points_req=num_located_neighbors_req, return_dispersion=False,
+            return (lambda x: median_point(x, num_points_req=num_located_neighbors_req, return_dispersion=True,
                                            dispersion_treshold=dispersion_threshold, use_usr_ids=True))
 
         # Keep track so number of original to control number of partitions through iterations
@@ -186,7 +213,8 @@ class SLP(Algorithm):
         start_time = time.time()
         # Create edge list (src -> dst) where we attach known locations to "src"  and then group by dst
         # end result is is [(dst, [all known locations of neighbors])]
-        adj_list_w_locations = self.filtered_edge_list.join(self.updated_locations).map(lambda (a,b): (b[0], (b[1],a))).groupByKey()
+        location_only = self.updated_locations.map(lambda (a,b): (a, b[0]))
+        adj_list_w_locations = self.filtered_edge_list.join(location_only).map(lambda (a,b): (b[0], (b[1],a))).groupByKey()
 
         # For each "dst" calculate median point of known neighbors
         median_point_w_options = median_point_w_options_generator(self.options['num_located_neighbors_req'],self.options['dispersion_threshold'])
@@ -229,7 +257,7 @@ class SLP(Algorithm):
             def median_point_w_options_generator(num_points_req, dispersion_threshold):
                 return (lambda x: median_point(x, num_points_req=num_points_req, return_dispersion=False, dispersion_treshold=dispersion_threshold))
 
-            f = median_point_w_options_generator(self.options['num_points_req'],self.options['dispersion_threshold'])
+            f = median_point_w_options_generator(self.options['num_points_req_for_known'],self.options['dispersion_threshold'])
             original_user_locations = self.sqlCtx.sql('select user.id_str, geo.coordinates from %s where geo.coordinates is not null'%\
                 self.options['temp_table_name'])\
                 .map(lambda a: (a.id_str, a.coordinates))\
@@ -240,7 +268,7 @@ class SLP(Algorithm):
         original_user_locations = original_user_locations.filter(filter_function)
         number_locations = original_user_locations.count()
 
-        found_locations = original_user_locations.join(self.updated_locations)
+        found_locations = original_user_locations.join(self.updated_locations.map(lambda (a,b): (a, b[0])))
         found_locations_local = found_locations.collect()
         print 'Number of Found Locations: ', len(found_locations_local)
         errors = []
@@ -259,6 +287,44 @@ class SLP(Algorithm):
 
         return final_results
 
+    def predict_probability_radius(self, dist, median_dist, std_dev):
+        try:
+            dist_diff = dist-median_dist
+            if std_dev>0:
+                stdev_mult = dist_diff/std_dev
+            else:
+                stdev_mult=0
+            rounded_stdev = np.around(stdev_mult, decimals=3)
+            predict_pct_median=0
+            max_std = np.max(self.predictions_curve["std_range"])
+            min_std = np.min(self.predictions_curve["std_range"])
+            if (rounded_stdev< max_std and rounded_stdev>min_std) :
+                predict_med = self.predictions_curve.ix[(self.predictions_curve.std_range-rounded_stdev).abs().argsort()[:1]]
+                predict_pct_median = predict_med.iloc[0]['pct_within_med']
+            elif rounded_stdev< max_std:
+                predict_pct_median = 1
+
+        except:
+            predict_pct_median = None
+
+        prob = predict_pct_median
+        return prob
+
+
+    def predict_probability_area(self, upper_bound, lower_bound, center, med_error, std_dev):
+        #For now this function will return the minimum and maximum probability using the circle prediction algorithm
+        (lat, lon) = center
+        (max_lat, max_lon) = upper_bound
+        (min_lat, min_lon) = upper_bound
+        top_dist = haversine(lon, lat, lon, max_lat)
+        bottom_dist = haversine(lon, lat, lon, min_lat)
+        r_dist = haversine(lon, lat, max_lon, lat)
+        l_dist = haversine(lon, lat, min_lon, lat)
+        min_dist = min([top_dist, bottom_dist, r_dist, l_dist])
+        max_dist = max([top_dist, bottom_dist, r_dist, l_dist])
+        min_prob = SLP.predict_probability_radius(min_dist, med_error, std_dev)
+        max_prob = SLP.predict_probability_radius(max_dist, med_error, std_dev)
+        return (min_prob, max_prob)
 
     def load(self, input_fname):
         """Load a pre-trained model"""

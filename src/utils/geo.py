@@ -19,7 +19,7 @@ def haversine(lon1, lat1, lon2, lat2):
     return c * EARTH_RADIUS
 
 def median_point(points, num_points_req=3, return_dispersion=True, dispersion_treshold=None, use_usr_ids=False):
-    """ Return the median point and the dispersion"""
+    """ Return the median point and the dispersion as well as the standard deviation of the dispersion"""
     local_cache = {}
     if use_usr_ids:
         # If we've passed in [(ll, usr_id), (ll, usr_id)] check that we have the right number of user ids instead
@@ -73,7 +73,7 @@ def median_point(points, num_points_req=3, return_dispersion=True, dispersion_tr
             return []
 
     if return_dispersion:
-        return [(points[min_index], dispersion)]
+        return [(points[min_index], dispersion, np.mean(current_errors), np.std(current_errors))]
     else:
         return [points[min_index]]
 
