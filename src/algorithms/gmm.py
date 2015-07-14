@@ -171,7 +171,7 @@ class GMM(Algorithm):
         return total_prob
 
     @staticmethod
-    def predict_probability_radius(model, radius, center_point):
+    def predict_probability_radius(gmm_model, radius, center_point):
         total_prob = 0
         # determine the upper and lower bounds based on a km radius
         center_lat = center_point[1]
@@ -185,15 +185,15 @@ class GMM(Algorithm):
 
         upper_bound = [right_lon, upper_lat]
         lower_bound = [left_lon, lower_lat]
-        initial_prob = GMM.predict_probability_area(model, upper_bound, lower_bound)
+        initial_prob = GMM.predict_probability_area(gmm_model, upper_bound, lower_bound)
 
         #remove the corner probabilities to better estimate the area
         #determine the approximate probability distribution at the corners vs the center
         #for a completely homogenous distribution the corners are approximately 20% of the area of the square
         #as we do not have a homegenous distribution this is a better approximation
-        ur_prob = np.exp(model.score(upper_bound))
-        ll_prob = np.exp(model.score(lower_bound))
-        center_prob = np.exp(model.score(center_point))
+        ur_prob = np.exp(gmm_model.score(upper_bound))[0]
+        ll_prob = np.exp(gmm_model.score(lower_bound))[0]
+        center_prob = np.exp(gmm_model.score(center_point))[0]
         dist_adjustment = np.mean([ur_prob, ll_prob])/center_prob
 
         total_prob = initial_prob - (.2*dist_adjustment)*initial_prob
