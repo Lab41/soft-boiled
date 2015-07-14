@@ -179,7 +179,7 @@ class GMM(Algorithm):
         lat_dist = radius/111.32
         upper_lat = center_lat + lat_dist
         lower_lat = center_lat - lat_dist
-        lon_dist = radius/111.32 * math.cos(math.radians(center_lon))
+        lon_dist = radius/111.32 * math.cos(math.radians(center_lat))
         right_lon = center_lon + lon_dist
         left_lon = center_lon - lon_dist
 
