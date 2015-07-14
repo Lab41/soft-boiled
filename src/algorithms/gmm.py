@@ -201,7 +201,7 @@ class GMM(Algorithm):
             total_prob =0.0
         elif total_prob>1.0:
             total_prob=1.0
-        return total_prob[0]
+        return total_prob
 
 
     def load(self, data_path):
