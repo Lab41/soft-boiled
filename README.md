@@ -14,8 +14,8 @@ from src.algorithms.slp import SLP
 tweets = sqlCtx.parquetFile('hdfs:///post_etl_datasets/twitter')
 
 # Configure options object
-options = {'dispersion_threshold':dispersion, 'num_located_neighbors_req':3, 
-                   'num_iters':5, 'hold_out':holdout}
+options = {'dispersion_threshold':100, 'num_located_neighbors_req':3, 
+                   'num_iters':5, 'hold_out':set(['9'])}
 # Create algorithm with options
 slp = SLP(sc, sqlCtx, options)
 # Train 
@@ -58,7 +58,7 @@ from src.algorithms.gmm import GMM
 tweets = sqlCtx.parquetFile('hdfs:///post_etl_datasets/twitter')
 
 # Configure options object
-options = {'fields':set(['user.location', 'text'])})
+options = {'fields':set(['user.location', 'text'])}
 # Create algorithm with options
 gmm = GMM(sc, sqlCtx, options)
 # Train
