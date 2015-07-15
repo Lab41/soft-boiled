@@ -21,5 +21,10 @@ class Algorithm:
     @abstractmethod
     def load(self, input_fname): pass
 
+    @abstractmethod
+    def predict_probability_area(model, upper_bound, lower_bound): pass
+
+    @abstractmethod
+    def predict_probability_radius(model, radius): pass
 
 

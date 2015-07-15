@@ -157,7 +157,7 @@ class GMM(Algorithm):
         return distance
 
     @staticmethod
-    def prob_mass(model, upper_bound, lower_bound):
+    def predict_probability_area(model, upper_bound, lower_bound):
         total_prob = 0
         for i in range(0, len(model.weights_)):
             val = ext.mvnormcdf(upper_bound, model.means_[i], model.covars_[i], lower_bound, maxpts=2000)
@@ -169,6 +169,40 @@ class GMM(Algorithm):
                 weighted_val = val * model.weights_[i]
                 total_prob += weighted_val
         return total_prob
+
+    @staticmethod
+    def predict_probability_radius(gmm_model, radius, center_point):
+        total_prob = 0
+        # determine the upper and lower bounds based on a km radius
+        center_lat = center_point[1]
+        center_lon = center_point[0]
+        lat_dist = radius/111.32
+        upper_lat = center_lat + lat_dist
+        lower_lat = center_lat - lat_dist
+        lon_dist = radius/111.32 * math.cos(math.radians(center_lat))
+        right_lon = center_lon + lon_dist
+        left_lon = center_lon - lon_dist
+
+        upper_bound = [right_lon, upper_lat]
+        lower_bound = [left_lon, lower_lat]
+        initial_prob = GMM.predict_probability_area(gmm_model, upper_bound, lower_bound)
+
+        #remove the corner probabilities to better estimate the area
+        #determine the approximate probability distribution at the corners vs the center
+        #for a completely homogenous distribution the corners are approximately 20% of the area of the square
+        #as we do not have a homegenous distribution this is a better approximation
+        ur_prob = np.exp(gmm_model.score(upper_bound))[0]
+        ll_prob = np.exp(gmm_model.score(lower_bound))[0]
+        center_prob = np.exp(gmm_model.score(center_point))[0]
+        dist_adjustment = np.mean([ur_prob, ll_prob])/center_prob
+
+        total_prob = initial_prob - (.2*dist_adjustment)*initial_prob
+        if total_prob<0.0:
+            total_prob =0.0
+        elif total_prob>1.0:
+            total_prob=1.0
+        return total_prob
+
 
     def load(self, data_path):
         options = self.sc.broadcast(self.options)
