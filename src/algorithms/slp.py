@@ -7,6 +7,7 @@ import pandas as pd
 from src.algorithms.algorithm import Algorithm
 from src.utils.geo import haversine, median_point
 from src.utils.schema import get_twitter_schema
+import csv
 
 class SLP(Algorithm):
     def __init__(self, context, sqlCtx, options, saved_model_fname=None):
@@ -82,7 +83,7 @@ class SLP(Algorithm):
             output_vals.append((dst, src))
         return output_vals
 
-    def load(self, data_path):
+    def load_data(self, data_path):
         options = self.sc.broadcast(self.options)
         # TODO: Make the following parameters: table name, # locations required
         if 'parquet' in data_path or 'use_parquet' in self.options and self.options['use_parquet']:
@@ -131,6 +132,7 @@ class SLP(Algorithm):
             .flatMap(SLP.get_at_mentions).groupByKey()\
             .flatMap(lambda (a,b): SLP.filter_non_bidirectional(b)).coalesce(300)
         full_edge_list.cache()
+        self.full_edge_list = full_edge_list
 
         print 'Finding known user locations'
         # Find Known user locations
@@ -326,13 +328,38 @@ class SLP(Algorithm):
         max_prob = SLP.predict_probability_radius(max_dist, med_error, std_dev)
         return (min_prob, max_prob)
 
-    def load(self, input_fname):
+    def load_model(self, input_fname):
         """Load a pre-trained model"""
-        self.updated_locations_local = pickle.load(open(input_fname, 'rb'))
-        # pull into spark context
+        input_file = open(input_fname)
+        csv_reader = csv.reader(input_file)
+        self.updated_locations_local = []
+        self.original_user_locations_local = []
+        for usr_id, lat, lon, median, mean, std_dev in csv_reader:
+            latlon = [float(lat), float(lon)]
+            if len(median) > 0:
+                # Estimated user location
+                self.updated_locations_local.append((usr_id, latlon))
+            else:
+                self.original_user_locations_local.append((usr_id, latlon))
+
         self.updated_locations = self.sc.parallelize(self.updated_locations_local)
+        self.original_user_locations = self.sc.parallelize(self.original_user_locations_local)
 
 
-    def save(self, output_fname):
+    def save_model(self, output_fname):
         """Save the current model for future use"""
-        pickle.dump(self.updated_locations_local, open(output_fname, 'wb'))
+        output_file = open(output_fname, 'w')
+        csv_writer = csv.writer(output_file)
+
+        for user_location in self.updated_locations_local:
+            usr_id = user_location[0]
+            results_object = user_location[1]
+            lat = results_object[0][0]
+            lon = results_object[0][1]
+            dispersion = results_object[1]
+            mean = results_object[2]
+            std_dev = results_object[3]
+
+            csv_writer.writerow([usr_id, lat, lon, dispersion, mean, std_dev])
+
+        output_file.close()

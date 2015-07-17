@@ -16,10 +16,10 @@ class Algorithm:
     """ An abstract method that is expected to test the algorithm and return training info about the model"""
 
     @abstractmethod
-    def save(self, output_fname): pass
+    def save_model(self, output_fname): pass
 
     @abstractmethod
-    def load(self, input_fname): pass
+    def load_model(self, input_fname): pass
 
     @abstractmethod
     def predict_probability_area(model, upper_bound, lower_bound): pass

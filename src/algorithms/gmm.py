@@ -204,7 +204,7 @@ class GMM(Algorithm):
         return total_prob
 
 
-    def load(self, data_path):
+    def load_data(self, data_path):
         options = self.sc.broadcast(self.options)
         # TODO: Make the following parameters: table name, # locations required
         if 'parquet' in data_path or 'use_parquet' in self.options and self.options['use_parquet']:
@@ -289,10 +289,10 @@ class GMM(Algorithm):
                          'num_locs': len(errors), 'options': self.options}
         return final_results
 
-    def load(self, input_fname):
+    def load_model(self, input_fname):
         """Load a pre-trained model"""
         self.model = pickle.load(open(input_fname, 'rb'))
 
-    def save(self, output_fname):
+    def save_model(self, output_fname):
         """Save the current model for future use"""
         pickle.dump(self.model, open(output_fname, 'wb'))
