@@ -7,6 +7,7 @@ import pandas as pd
 from src.algorithms.algorithm import Algorithm
 from src.utils.geo import haversine, median_point
 from src.utils.schema import get_twitter_schema
+import gzip
 import csv
 
 class SLP(Algorithm):
@@ -330,7 +331,10 @@ class SLP(Algorithm):
 
     def load_model(self, input_fname):
         """Load a pre-trained model"""
-        input_file = open(input_fname)
+        if input_fname.endswith('.gz'):
+            input_file = gzip.open(input_fname, 'rb')
+        else:
+            input_file = open(input_fname, 'rb')
         csv_reader = csv.reader(input_file)
         self.updated_locations_local = []
         self.original_user_locations_local = []
@@ -348,7 +352,10 @@ class SLP(Algorithm):
 
     def save_model(self, output_fname):
         """Save the current model for future use"""
-        output_file = open(output_fname, 'w')
+        if output_fname.endswith('.gz'):
+            output_file = gzip.open(output_fname, 'w')
+        else:
+            output_file = open(output_fname, 'w')
         csv_writer = csv.writer(output_file)
 
         for user_location in self.updated_locations_local:
