@@ -9,6 +9,8 @@ from src.utils.geo import haversine
 from src.utils.schema import get_twitter_schema
 import statsmodels.sandbox.distributions.extras as ext
 import math
+import gzip
+import csv
 
 class GMM(Algorithm):
     def __init__(self, context, sqlCtx, options, saved_model_fname=None):
@@ -291,8 +293,63 @@ class GMM(Algorithm):
 
     def load_model(self, input_fname):
         """Load a pre-trained model"""
-        self.model = pickle.load(open(input_fname, 'rb'))
+        #self.model = pickle.load(open(input_fname, 'rb'))
+        self.model = {}
+        if input_fname.endswith('.gz'):
+            input_file = gzip.open(input_fname, 'rb')
+        else:
+            input_file = open(input_fname, 'rb')
+        csv_reader = csv.reader(input_file)
+
+        for line in csv_reader:
+            word = line[0].decode('utf-8')
+            error = float(line[1])
+            n_components = int(line[2])
+            covariance_type = line[3]
+            if covariance_type != 'full':
+                raise NotImplementedError('Only full covariance matricies supported')
+
+            HEADER = 4
+            NUM_ITEMS_PER_COMPONENT= 7
+            means = []
+            covars = []
+            weights = []
+            for i in range(n_components):
+                lat = float(line[i*NUM_ITEMS_PER_COMPONENT + HEADER + 0])
+                lon = float(line[i*NUM_ITEMS_PER_COMPONENT + HEADER + 1])
+                mean = [lat, lon]
+                means.append(mean)
+                weight = float(line[i*NUM_ITEMS_PER_COMPONENT + HEADER + 2])
+                weights.append(weight)
+
+                vals = map(float, line[i*NUM_ITEMS_PER_COMPONENT + HEADER + 3: i*NUM_ITEMS_PER_COMPONENT + HEADER + 7])
+                covar = np.array([vals[:2], vals[2:4]])
+                covars.append(covar)
+
+            new_gmm = mixture.GMM(n_components=n_components, covariance_type=covariance_type)
+            new_gmm.covars_ = np.array(covars)
+            new_gmm.means_ = np.array(means)
+            new_gmm.weights_ = np.array(weights)
+            new_gmm.converged_ = True
+            self.model[word] = (new_gmm, error)
+
+
 
     def save_model(self, output_fname):
         """Save the current model for future use"""
-        pickle.dump(self.model, open(output_fname, 'wb'))
+        #pickle.dump(self.model, open(output_fname, 'wb'))
+        if output_fname.endswith('.gz'):
+            output_file = gzip.open(output_fname, 'w')
+        else:
+            output_file = open(output_fname, 'w')
+        csv_writer = csv.writer(output_file)
+        LAT = 0
+        LON = 1
+        for word in self.model:
+            (gmm, error) = self.model[word]
+            row = [word.encode('utf-8'), error, gmm.n_components, gmm.covariance_type]
+            for mean, weight, covar in zip(gmm.means_, gmm.weights_, gmm.covars_):
+                row.extend([mean[LAT], mean[LON], weight, covar[0][0], covar[0][1], covar[1][0], covar[1][1]])
+            csv_writer.writerow(row)
+        output_file.close()
+
