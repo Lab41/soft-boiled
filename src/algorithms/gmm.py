@@ -27,8 +27,13 @@ class GMM(Algorithm):
         if 'temp_table_name' not in options:
             self.options['temp_table_name'] = 'tweets'
 
+        if 'max_num_components' not in options:
+            self.options['max_num_components'] = 12
+
+        if 'min_occurrences' not in options:
+            self.options['min_occurrences'] = 10
+
         self.model = None
-        self.hasRegisteredTable = False
 
         if saved_model_fname:
             self.load(saved_model_fname)
@@ -100,13 +105,14 @@ class GMM(Algorithm):
         return np.median(errors)
 
     @staticmethod
-    def fit_gmm(data_array):
+    def fit_gmm(data_array, options=None):
         """ Searches within bounts to fit a GMM with the optimal number of components"""
+
         data_array = list(data_array)
-        if len(data_array) < 10:
+        if len(data_array) < options['min_occurrences']:
             return (None, None)
         min_components = 1
-        max_components = min(len(data_array)-1, 12)
+        max_components = min(len(data_array)-1, options['max_num_components'])
         models = []
         bics = []
         min_bic_seen = 10000000
@@ -232,9 +238,7 @@ class GMM(Algorithm):
 
     def train(self, all_tweets):
         """ Train a set of GMMs for a given set of training data"""
-        if not self.hasRegisteredTable:
-            all_tweets.registerTempTable(self.options['temp_table_name'])
-            self.hasRegisteredTable = True
+        all_tweets.registerTempTable(self.options['temp_table_name'])
 
         tweets_w_geo = self.sqlCtx.sql('select geo, entities,  extended_entities, %s from %s where geo.coordinates is not null %s'
                                        % (','.join(list(self.options['fields'])), self.options['temp_table_name'],
@@ -244,8 +248,10 @@ class GMM(Algorithm):
             return (lambda x: GMM.tokenize_w_location(x, fields=fields))
         word_ocurrences = tweets_w_geo.flatMap(tokenize_with_defaults(self.options['fields']))
 
+        def fit_gmm_with_defaults(options):
+            return (lambda x: GMM.fit_gmm(x, options=options))
         # In this line we group occurrences of words, fit a gmm to each word and bring it back to the local context
-        self.model = word_ocurrences.groupByKey().mapValues(GMM.fit_gmm).collectAsMap()
+        self.model = word_ocurrences.groupByKey().mapValues(fit_gmm_with_defaults(self.options)).collectAsMap()
 
         # TODO: Add filter of infrequent words before move to the local context
         # Clean out words that occur less than a threshold number of times
@@ -260,9 +266,7 @@ class GMM(Algorithm):
 
     def test(self, all_tweets):
         """ Test a pretrained model on a set of test data"""
-        if not self.hasRegisteredTable:
-            all_tweets.registerTempTable(self.options['temp_table_name'])
-            self.hasRegisteredTable = True
+        all_tweets.registerTempTable(self.options['temp_table_name'])
 
         tweets_w_geo = self.sqlCtx.sql('select geo, entities,  extended_entities, %s from %s where geo.coordinates is not null %s'
                                        % (','.join(list(self.options['fields'])), self.options['temp_table_name'],

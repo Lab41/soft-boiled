@@ -44,7 +44,7 @@ class SLP(Algorithm):
         self.original_user_locations = None
         self.filtered_edge_list = None
         self.updated_locations_local = None
-        self.hasRegisteredTable = False
+
         self.iterations_completed = 0
         self.predictions_curve = None
 
@@ -110,10 +110,7 @@ class SLP(Algorithm):
 
     def train(self, all_tweets, predictions_curve=None):
         options = self.sc.broadcast(self.options)
-        if not self.hasRegisteredTable:
-            all_tweets.registerTempTable(self.options['temp_table_name'])
-            self.hasRegisteredTable = True
-
+        all_tweets.registerTempTable(self.options['temp_table_name'])
 
         # Helper function exploits python closure to pass options to map tasks
         def median_point_w_options_generator(num_points_req_for_known, home_radius_for_known):
@@ -242,9 +239,7 @@ class SLP(Algorithm):
     def test(self, all_tweets, skip_load=False):
         # Push config to all nodes
         options = self.sc.broadcast(self.options)
-        if not self.hasRegisteredTable:
-            all_tweets.registerTempTable(self.options['temp_table_name'])
-            self.hasRegisteredTable = True
+        all_tweets.registerTempTable(self.options['temp_table_name'])
 
         if skip_load and  self.all_user_locations is not None:
             # If we've just trained then there is no need to go back to original data
