@@ -182,8 +182,8 @@ class GMM(Algorithm):
     def predict_probability_radius(gmm_model, radius, center_point):
         total_prob = 0
         # determine the upper and lower bounds based on a km radius
-        center_lat = center_point[1]
-        center_lon = center_point[0]
+        center_lat = center_point[0]
+        center_lon = center_point[1]
         lat_dist = radius/111.32
         upper_lat = center_lat + lat_dist
         lower_lat = center_lat - lat_dist
@@ -191,8 +191,8 @@ class GMM(Algorithm):
         right_lon = center_lon + lon_dist
         left_lon = center_lon - lon_dist
 
-        upper_bound = [right_lon, upper_lat]
-        lower_bound = [left_lon, lower_lat]
+        upper_bound = [upper_lat, right_lon]
+        lower_bound = [lower_lat, left_lon]
         initial_prob = GMM.predict_probability_area(gmm_model, upper_bound, lower_bound)
 
         #remove the corner probabilities to better estimate the area
