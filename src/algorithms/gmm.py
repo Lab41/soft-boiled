@@ -5,7 +5,7 @@ import re
 import urlparse
 # local includes
 from src.algorithms.algorithm import Algorithm
-from src.utils.geo import haversine
+from src.utils.geo import haversine, bb_center
 from src.utils.schema import get_twitter_schema
 import statsmodels.sandbox.distributions.extras as ext
 import math
@@ -61,6 +61,9 @@ class GMM(Algorithm):
         # Get true location
         if inputRow.geo and inputRow.geo.type == 'Point':
             location = inputRow.geo.coordinates
+        elif inputRow.place.bounding_box and inputRow.place.bounding_box.type =='Polygon' \
+                and inputRow.place.place_type in ['city','poi','neighborhood']:
+            location = bb_center(inputRow.place.bounding_box.coordinates)
         else:
             location = None
 
@@ -89,8 +92,9 @@ class GMM(Algorithm):
         """ Takes the result of tokenize and turns it into a list of (word, location) tuples to be aggregated"""
         (location, tokens) = GMM.tokenize(inputRow, fields)
         output_tokens = []
-        for token in tokens:
-            output_tokens.append((token, location))
+        if location!=None:
+            for token in tokens:
+                output_tokens.append((token, location))
         return output_tokens
 
     @staticmethod
@@ -139,7 +143,7 @@ class GMM(Algorithm):
         new_gmm = mixture.GMM(n_components=n_components, covariance_type=covariance_type)
         new_gmm.means_ = np.concatenate([g[0].means_ for g in gmms])
         new_gmm.covars_ = np.concatenate([g[0].covars_ for g in gmms])
-        weights = np.concatenate([g[0].weights_ * ((1/g[1])**4) for g in gmms])
+        weights = np.concatenate([g[0].weights_ * ((1/max(g[1],1))**4) for g in gmms])
         new_gmm.weights_ = weights / np.sum(weights) # Normalize weights
         new_gmm.converged_ = True
         return new_gmm
@@ -240,7 +244,8 @@ class GMM(Algorithm):
         """ Train a set of GMMs for a given set of training data"""
         all_tweets.registerTempTable(self.options['temp_table_name'])
 
-        tweets_w_geo = self.sqlCtx.sql('select geo, entities,  extended_entities, %s from %s where geo.coordinates is not null %s'
+        tweets_w_geo = self.sqlCtx.sql('select geo, place, entities,  extended_entities, %s from %s where (geo.coordinates is not null \
+                                        or (place is not null and place.bounding_box.type="Polygon")) %s'
                                        % (','.join(list(self.options['fields'])), self.options['temp_table_name'],
                                           self.options['where_clause']))
 

@@ -6,7 +6,7 @@ from mpl_toolkits.basemap import Basemap
 
 
 
-@staticmethod
+
 def plot_gmm(gmm, true_ll=None, percent=None):
     """Plots the contour map of a GMM on top of a world map
     Partially from: http://matplotlib.org/basemap/users/examples.html
