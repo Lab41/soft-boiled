@@ -313,7 +313,7 @@ class SLP(Algorithm):
         #For now this function will return the minimum and maximum probability using the circle prediction algorithm
         (lat, lon) = center
         (max_lat, max_lon) = upper_bound
-        (min_lat, min_lon) = upper_bound
+        (min_lat, min_lon) = lower_bound
         top_dist = haversine(lon, lat, lon, max_lat)
         bottom_dist = haversine(lon, lat, lon, min_lat)
         r_dist = haversine(lon, lat, max_lon, lat)
