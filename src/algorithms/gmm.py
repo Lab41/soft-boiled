@@ -61,7 +61,7 @@ class GMM(Algorithm):
         # Get true location
         if inputRow.geo and inputRow.geo.type == 'Point':
             location = inputRow.geo.coordinates
-        elif inputRow.place.bounding_box and inputRow.place.bounding_box.type =='Polygon' \
+        elif inputRow.place and inputRow.place.bounding_box and inputRow.place.bounding_box.type =='Polygon' \
                 and inputRow.place.place_type in ['city','poi','neighborhood']:
             location = bb_center(inputRow.place.bounding_box.coordinates)
         else:
