@@ -30,28 +30,35 @@ def median(distance_func, vertices, weights=None):
     """
         given a python list of vertices, and a distance function, this will find the vertex that is most central
         relative to all other vertices. All of the vertices must have geocoords
-        """
+    """
 
     #get the distance between any two points
-    distances = map(lambda (v0, v1) :distance_func(v0.geo_coord, v1.geo_coord), itertools.combinations(vertices, 2))
+    distances = map(lambda (v0, v1) :distance_func(v0.geo_coord, v1.geo_coord), itertools.combinations (vertices, 2))
 
     #create a dictionary with keys representing the index of a location
     m = { a: list() for a in range(len(vertices)) }
 
     #add the distances from each point to the dict
-    for (k0,k1),distance in zip(itertools.combinations(range(len(vertices)), 2) , distances):
+    for (k0,k1),distance in zip(itertools.combinations(range(len(vertices)), 2), distances):
         #a distance can be None if one of the vertices does not have a geocoord
         if(weights is None):
             m[k0].append(distance)
             m[k1].append(distance)
         else:
-            m[k0].append(distance/weights[k0])
-            m[k1].append(distance/weights[k1])
+            # Weight distances by weight of destination vertex
+            m[k0].extend([distance]*weights[k1])
+            m[k1].extend([distance]*weights[k0])
 
-summed_values = map(sum, m.itervalues())
+    if weights is not None:
+        # Handle self-weight (i.e. if my vertex has weight of 6 there are 5 additional self connections if
+        # Starting from my location)
+        for k in range(len(vertices)):
+            if weights[k] > 1:
+                m[k].extend([0.0]*(weights[k]-1))
+
+    summed_values = map(sum, m.itervalues())
 
     idx = summed_values.index(min(summed_values))
-
     return LocEstimate(geo_coord=vertices[idx].geo_coord, dispersion=np.median(m[idx]), dispersion_std_dev=np.std(m[idx]))
 
 
@@ -80,10 +87,10 @@ def get_edge_list(table_name, num_paritions=300):
                                if mentioned_user.id_str is not None and row.id_str !=  mentioned_user.id_str])\
             .reduceByKey(lambda x,y:x+y)
 
-return tmp_edges.map(lambda ((src_id,dest_id),num_mentions): ((dest_id,src_id),num_mentions))\
-    .join(tmp_edges)\
-        .map(lambda ((src_id,dest_id), (count0, count1)): (src_id, (dest_id, min(count0,count1))))\
-        .coalesce(num_paritions).cache()
+    return tmp_edges.map(lambda ((src_id,dest_id),num_mentions): ((dest_id,src_id),num_mentions))\
+        .join(tmp_edges)\
+            .map(lambda ((src_id,dest_id), (count0, count1)): (src_id, (dest_id, min(count0,count1))))\
+            .coalesce(num_paritions).cache()
 
 def run(table_name):
 
@@ -117,17 +124,17 @@ def train(locs_known, edge_list, num_iters, neighbor_threshold=3, dispersion_thr
 
     l = locs_known
 
-for i in range(num_iters):
-    l = filtered_edge_list.join(l)\
-        .map(lambda (src_id, ((dst_id, weight), known_vertex)) : (dst_id, (known_vertex, weight)))\
-        .groupByKey()\
-        .filter(lambda (src_id, neighbors) : neighbors.maxindex >= neighbor_threshold)\
-        .map(lambda (src_id, neighbors) :\
-             (src_id, median(haversine2, [v for v,w in neighbors],[w for v,w in neighbors])))\
-             .filter(lambda (src_id, estimated_loc): estimated_loc.dispersion < dispersion_threshold)\
-             .union(locs_known)
+    for i in range(num_iters):
+        l = filtered_edge_list.join(l)\
+            .map(lambda (src_id, ((dst_id, weight), known_vertex)) : (dst_id, (known_vertex, weight)))\
+            .groupByKey()\
+            .filter(lambda (src_id, neighbors) : neighbors.maxindex >= neighbor_threshold)\
+            .map(lambda (src_id, neighbors) :\
+                 (src_id, median(haversine2, [v for v,w in neighbors],[w for v,w in neighbors])))\
+                 .filter(lambda (src_id, estimated_loc): estimated_loc.dispersion < dispersion_threshold)\
+                 .union(locs_known)
 
-return l
+    return l
 
 
 holdout_10pct = lambda (src_id) : src_id[-1] == '6'
