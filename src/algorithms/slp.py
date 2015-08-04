@@ -183,7 +183,7 @@ class SLP(Algorithm):
         print 'Building a filtered edge list'
         # Build a filtered edge list so we don't ever try to approximate the known user locations
         filtered_edge_list = full_edge_list.keyBy(lambda (a, b): b).leftOuterJoin(updated_locations)\
-                .flatMap(lambda (a,b): [b[0]] if b is not None else [])
+                .flatMap(lambda (a,b): [b[0]] if b[1] is not None else [])
         filtered_edge_list.cache()
 
         self.updated_locations = updated_locations
