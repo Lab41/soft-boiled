@@ -189,24 +189,35 @@ def run_test(original_locs_known, estimated_locs,  holdout_func):
 def estimator(edge_list, locs_known):
     print 'Building the error estimation curve'
 
-    # Filter edge list so we never attempt to estimate a "known" location
-    filtered_edge_list = edge_list.leftOuterJoin(locs_known)\
-        .filter(lambda (src_id, ((dst_id, weight), loc_known)) : loc_known is None)\
+    known_edges = edge_list.leftOuterJoin(locs_known)\
+        .filter(lambda (src_id, ((dst_id, weight), loc_known)) : loc_known is not None)\
         .map(lambda (dst_id, ((src_id, weight), loc_known)): (src_id, (dst_id, weight)))
 
-    r =  filtered_edge_list.join(locs_known)\
+    r =  known_edges.join(locs_known)\
         .map(lambda (src_id, ((dst_id, weight), src_loc)) : (dst_id, (src_loc, weight)))\
         .groupByKey()\
-        .flatMapValues(lambda neighbors : median(haversine, [loc for loc,w in neighbors], [w for loc,w in neighbors]))\
+        .filter(lambda (src_id, neighbors) : len(neighbors) > 2)\
+        .map(lambda (src_id, neighbors) :\
+             (src_id, median(haversine, [loc for loc,w in neighbors], [w for loc,w in neighbors])))\
         .join(locs_known)\
-        .flatMapValues(lambda (found_loc, known_loc) : ((haversine(known_loc.geo_coord,  found_loc.geo_coord)\
-                                                         - found_loc.dispersion)/known_loc.dispersion_std_dev, found_loc))\
+        .map(lambda (src_id, (found_loc, known_loc)) : (src_id, (haversine(known_loc.geo_coord,  found_loc.geo_coord)\
+            - found_loc.dispersion)/found_loc.dispersion_std_dev))\
         .values()
 
-    sample = r.sample(False, .1, 20)
-    local_r = sample.collect()
+    total_count = r.count()
+
+    print("Total result count: ", total_count)
+
+    #maybe do a smaple here
+
+    if(total_count == 0):
+        print("Stopping because there were no results")
+        return None
+
+    local_r = r.collect()
+
     sorted_vals = np.sort(local_r)
-    yvals=np.arange(len(sorted_vals)/float(len(sorted_vals)))
+    yvals=np.arange(len(sorted_vals))/float(len(sorted_vals))
     return pd.DataFrame(np.column_stack((sorted_vals, yvals)), columns=["std_range", "pct_within_med"])
 
 
