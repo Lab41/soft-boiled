@@ -3,6 +3,7 @@ import itertools
 from collections import namedtuple
 from math import floor, radians, sin, cos, asin, sqrt, pi
 import pandas as pd
+from src.utils.geo import bb_center
 
 GeoCoord = namedtuple('GeoCoord', ['lat', 'lon'])
 LocEstimate = namedtuple('LocEstimate', ['geo_coord', 'dispersion', 'dispersion_std_dev'])
@@ -71,8 +72,18 @@ def get_known_locs(sqlCtx, table_name, min_locs=3, num_paritions=30, dispersion_
         by the median location of all known tweets. A user must have at least min_locs locations in order for a location to be
         estimated
         '''
-    return sqlCtx.sql('select user.id_str, geo.coordinates from %s where geo.coordinates is not null' % table_name)\
-        .map(lambda row: (row.id_str, row.coordinates)).groupByKey()\
+    # Geo Coords
+
+
+    geo_coords = sqlCtx.sql('select user.id_str, geo.coordinates from %s where geo.coordinates is not null' % table_name)\
+        .map(lambda row: (row.id_str, row.coordinates))
+
+    place_coords = sqlCtx.sql("select user.id_str, place.bounding_box.coordinates from %s "%table_name +
+        "where geo.coordinates is null and size(place.bounding_box.coordinates) > 0 and place.place_type " +
+         "in ('city', 'neighborhood', 'poi')").map(lambda row: (row.id_str, bb_center(row.coordinates)))
+
+
+    return geo_coords.union(place_coords).groupByKey()\
         .filter(lambda (id_str,coord_list): len(coord_list) >= min_locs)\
             .map(lambda (id_str,coords): (id_str, median(haversine, [LocEstimate(GeoCoord(lat,lon), None, None)\
                                                                      for lat,lon in coords])))\
@@ -125,10 +136,12 @@ def train(locs_known, edge_list, num_iters, neighbor_threshold=3, dispersion_thr
         line 8:  union to create the global location rdd...                  (dst_id, median_geoCoord)
         '''
 
+    num_partitions = edge_list.getNumPartitions()
+
     # Filter edge list so we never attempt to estimate a "known" location
-    filtered_edge_list = edge_list.leftOuterJoin(locs_known)\
-        .filter(lambda (src_id, ((dst_id, weight), loc_known)) : loc_known is None)\
-        .map(lambda (dst_id, ((src_id, weight), loc_known)): (src_id, (dst_id, weight)))
+    filtered_edge_list = edge_list.keyBy(lambda (src_id, (dst_id, weight)): dst_id)\
+                            .leftOuterJoin(locs_known)\
+                            .flatMap(lambda (dst_id, (edge, loc_known)): [edge] if loc_known is None else [] )
 
     l = locs_known
 
@@ -140,27 +153,27 @@ def train(locs_known, edge_list, num_iters, neighbor_threshold=3, dispersion_thr
             .map(lambda (src_id, neighbors) :\
                  (src_id, median(haversine, [v for v,w in neighbors],[w for v,w in neighbors])))\
                  .filter(lambda (src_id, estimated_loc): estimated_loc.dispersion < dispersion_threshold)\
-                 .union(locs_known)
+                 .union(locs_known).coalesce(num_partitions)
 
     return l
 
 
-holdout_10pct = lambda (src_id) : src_id[-1] != '6'
+#holdout_10pct = lambda (src_id) : src_id[-1] != '6'
 
 
-def run_test(original_locs_known, estimated_locs_known,  holdout_func):
+def run_test(original_locs_known, estimated_locs,  holdout_func):
     '''
         '''
 
-    num_locs = locs_known.count()
-
     reserved_locs = original_locs_known.filter(lambda (src_id, loc): not holdout_func(src_id))
+    num_locs = reserved_locs.count()
 
-    errors = estimated_locs_known\
+
+    errors = estimated_locs\
         .filter(lambda (src_id, loc): not holdout_func(src_id))\
         .join(reserved_locs)\
         .map(lambda (src_id, (vtx_found, vtx_actual)) :\
-             (src_id, haversine(vtx_found.geo_coord, vtx_actual.geo_coord)))
+             haversine(vtx_found.geo_coord, vtx_actual.geo_coord))
 
     errors_local = errors.collect()
 
