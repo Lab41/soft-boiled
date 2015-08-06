@@ -205,8 +205,10 @@ class GMM(Algorithm):
         #as we do not have a homegenous distribution this is a better approximation
         ur_prob = np.exp(gmm_model.score(upper_bound))[0]
         ll_prob = np.exp(gmm_model.score(lower_bound))[0]
+        ul_prob = np.exp(gmm_model.score([upper_lat, left_lon]))[0]
+        lr_prob = np.exp(gmm_model.score([lower_lat, right_lon]))[0]
         center_prob = np.exp(gmm_model.score(center_point))[0]
-        dist_adjustment = np.mean([ur_prob, ll_prob])/center_prob
+        dist_adjustment = np.mean([ur_prob, ll_prob,ul_prob,lr_prob])/center_prob
 
         total_prob = initial_prob - (.2*dist_adjustment)*initial_prob
         if total_prob<0.0:
