@@ -169,8 +169,11 @@ class GMM(Algorithm):
         return distance
 
     @staticmethod
-    def compute_model(input_val, model=None, radius=100):
+    def compute_model(input_val, model=None, radius=100, predict_lower_bound=0.75):
         """ Given a model that maps tokens -> GMMs this will compute the most likely point"""
+        #The function will not return any model where the probability is below a certain threshold
+        #Default is set to 75%, so that means we estimate that 75% of the time the true location is within 100km of the estimated location
+        #To remove this filter simply set predict_lower_bound to zero
         tokens = input_val
         model = model.value
         models = []
@@ -185,6 +188,9 @@ class GMM(Algorithm):
             (best_lat, best_lon) = models[0][0].means_[np.argmax(models[0][0].weights_)]
             prob = GMM.predict_probability_radius(models[0][0], radius, (best_lat, best_lon))
         else:
+            return ((0.0,0.0), np.nan)
+
+        if prob<predict_lower_bound:
             return ((0.0,0.0), np.nan)
 
         return ((best_lat, best_lon), prob)
@@ -395,7 +401,7 @@ class GMM(Algorithm):
 
         return (all_tokens)
 
-    def predict_user(self, tweets_to_predict, model=None, radius=100):
+    def predict_user(self, tweets_to_predict, model=None, radius=100, predict_lower_bound=0.75):
         """Takes a set of tweets and for each user in those tweets it predicts a location
         Also returned are the probability of that prediction location being w/n 100 km of the true point"""
 
@@ -406,13 +412,13 @@ class GMM(Algorithm):
                             .keyBy(lambda row: row.user.id_str).groupByKey()
 
         # for each tweet calculate most likely position
-        def compute_user_model(model2, radius):
-            return (lambda x: GMM.compute_model(x, model=model2, radius=radius))
+        def compute_user_model(model2, radius, predict_lower_bound):
+            return (lambda x: GMM.compute_model(x, model=model2, radius=radius, predict_lower_bound=predict_lower_bound))
 
         def tokenize_with_defaults(fields):
             return (lambda x: GMM.tokenize_user_tweets(list(x), fields=fields))
 
-        user_function_w_closure = compute_user_model(model_b, radius)
+        user_function_w_closure = compute_user_model(model_b, radius, predict_lower_bound)
 
         results = tweets_by_user.mapValues(tokenize_with_defaults(self.options['fields'])).mapValues(user_function_w_closure)
 
