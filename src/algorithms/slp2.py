@@ -1,7 +1,7 @@
 import numpy as np
 import itertools
-from collections import namedtuple
-from math import floor, radians, sin, cos, asin, sqrt, pi
+from collections import namedtuple, defaultdict
+from math import floor, ceil, radians, sin, cos, asin, sqrt, pi
 import pandas as pd
 from src.utils.geo import bb_center
 
@@ -270,7 +270,58 @@ def predict_probability_area(upper_bound, lower_bound, center, med_error, std_de
     max_prob = SLP.predict_probability_radius(max_dist, med_error, std_dev)
     return (min_prob, max_prob)
 
+def predict_country(tweets, bounding_boxes):
+    '''
+    Take a set of estimates of user locations and estimate the country that user is in
 
+    tweets: RDD of (id_str, LocEstimate)
+    bounding_boxes: list [(country_code, (min_lat, max_lat, min_lon, max_lon)),...]
+    '''
+    # Convert Bounding boxes to allow for more efficient lookups
+    bb_lookup_lat = defaultdict(set)
+    bb_lookup_lon = defaultdict(set)
+    for i, (cc, (min_lat, max_lat, min_lon, max_lon)) in enumerate(bounding_boxes):
+        for lon in range(int(math.floor(min_lon)), int(math.ceil(max_lon))):
+            bb_lookup_lon[lon].add(i)
+        for lat in range(int(math.floor(min_lat)), int(math.ceil(max_lat))):
+            bb_lookup_lat[lat].add(i)
+
+    # broadcast to make more efficient
+    bb_lookup_lat_bcast = sc.broadcast(bb_lookup_lat)
+    bb_lookup_lon_bcast = sc.broadcast(bb_lookup_lon)
+    bounding_boxes_bcast = sc.broadcast(bounding_boxes)
+
+    # Do country lookups and return an RDD that is (id_str, [country_codes])
+    return tweets.mapValues(lambda loc_estimate: _predict_country_using_lookup(loc_estimate,\
+                                                                              bb_lookup_lat_bcast,
+                                                                              bb_lookup_lon_bcast,
+                                                                              bounding_boxes_bcast))
+
+def _predict_country_using_lookup(loc_estimate, lat_dict, lon_dict, bounding_boxes):
+    '''
+    Internal helper function that uses broadcast lookup tables to take a single location estimate and show
+        what country bounding boxes include that point
+
+    loc_estimate: LocEstimate
+    lat_dict: broadcast dictionary {integer_lat:set([bounding_box_indexes containing this lat])}
+    lon_dict: broadcast dictionary {integer_lon:set([bounding_box_indexes containing this lon])}
+    bounding_boxes: broadcast list [(country_code, (min_lat, max_lat, min_lon, max_lon)),...]
+    '''
+    lat = loc_estimate.geo_coord.lat
+    lon = loc_estimate.geo_coord.lon
+    countries = set()
+    potential_lats = lat_dict.value[math.floor(lat)]
+    potential_lons = lon_dict.value[math.floor(lon)]
+    intersection = potential_lats.intersection(potential_lons)
+    if len(intersection) == 0:
+        return []
+        #raise ValueError('uh oh')
+    else:
+        for index in intersection:
+            cc, (min_lat, max_lat, min_lon, max_lon) = bounding_boxes.value[index]
+            if min_lon < lon and lon < max_lon and min_lat < lat and lat < max_lat:
+                countries.add(cc)
+    return list(countries)
 
 def load_model(self, input_fname):
     """
