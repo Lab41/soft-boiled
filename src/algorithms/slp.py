@@ -44,7 +44,7 @@ def median(distance_func, vertices, weights=None):
     return LocEstimate(geo_coord=vertices[idx].geo_coord, dispersion=np.median(m[idx]), dispersion_std_dev=np.std(m[idx]))
 
 
-def get_known_locs(sqlCtx, table_name, min_locs=3, num_paritions=30, dispersion_threshold=50):
+def get_known_locs(sqlCtx, table_name, min_locs=3, num_partitions=30, dispersion_threshold=50):
     '''
         Given a loaded twitter table, this will return all the twitter users with locations. A user's location is determined
         by the median location of all known tweets. A user must have at least min_locs locations in order for a location to be
@@ -66,10 +66,10 @@ def get_known_locs(sqlCtx, table_name, min_locs=3, num_paritions=30, dispersion_
             .map(lambda (id_str,coords): (id_str, median(haversine, [LocEstimate(GeoCoord(lat,lon), None, None)\
                                                                      for lat,lon in coords])))\
                                                                      .filter(lambda (id_str, loc): loc.dispersion < dispersion_threshold)\
-                                                                     .coalesce(num_paritions).cache()
+                                                                     .coalesce(num_partitions).cache()
 
 
-def get_edge_list(sqlCtx, table_name, num_paritions=300):
+def get_edge_list(sqlCtx, table_name, num_partitions=300):
     '''
         Given a loaded twitter table, this will return the @mention network in the form (src_id, (dest_id, num_@mentions))
         '''
@@ -82,7 +82,7 @@ def get_edge_list(sqlCtx, table_name, num_paritions=300):
     return tmp_edges.map(lambda ((src_id,dest_id),num_mentions): ((dest_id,src_id),num_mentions))\
         .join(tmp_edges)\
             .map(lambda ((src_id,dest_id), (count0, count1)): (src_id, (dest_id, min(count0,count1))))\
-            .coalesce(num_paritions).cache()
+            .coalesce(num_partitions).cache()
 
 def run(sqlCtx, table_name, holdout_function=None):
 
