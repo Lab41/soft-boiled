@@ -7,10 +7,12 @@ import statsmodels.sandbox.distributions.extras as ext
 import math
 import gzip
 import csv
+import itertools
 # Remove these
 from collections import namedtuple, defaultdict
 from math import floor, ceil, radians, sin, cos, asin, sqrt, pi
 
+GMMLocEstimate = namedtuple('LocEstimate', ['geo_coord', 'prob'])
 GeoCoord = namedtuple('GeoCoord', ['lat', 'lon'])
 # TODO: Move this geo geo
 EARTH_RADIUS = 6367
@@ -142,7 +144,7 @@ def combine_gmms(gmms):
     return new_gmm
 
 
-def get_most_likely_point(tokens, model_bcast):
+def get_most_likely_point(tokens, model_bcast, radius=None):
     '''
     Create the combined GMM and find the most likely point. This function is called in a flatMap so return a list with
     0 or 1 item
@@ -158,10 +160,18 @@ def get_most_likely_point(tokens, model_bcast):
     if len(models) > 1:
         combined_gmm = combine_gmms(models)
         (best_lat, best_lon) = combined_gmm.means_[np.argmax(combined_gmm.weights_)]
-        return [GeoCoord(lat=best_lat, lon=best_lon)]
+        if radius:
+            prob = predict_probability_radius(combined_gmm, radius, (best_lat, best_lon))
+            return [GMMLocEstimate(GeoCoord(lat=best_lat, lon=best_lon), prob)]
+        else:
+            return [GMMLocEstimate(GeoCoord(lat=best_lat, lon=best_lon), None)]
     elif len(models) == 1:
         (best_lat, best_lon) = models[0][0].means_[np.argmax(models[0][0].weights_)]
-        return [GeoCoord(lat=best_lat, lon=best_lon)]
+        if radius:
+            prob = predict_probability_radius(combined_gmm, radius, (best_lat, best_lon))
+            return [GMMLocEstimate(GeoCoord(lat=best_lat, lon=best_lon), prob)]
+        else:
+            return [GMMLocEstimate(GeoCoord(lat=best_lat, lon=best_lon), None)]
     else:
         return []
 
@@ -202,8 +212,10 @@ def predict_probability_radius(gmm_model, radius, center_point):
     #as we do not have a homegenous distribution this is a better approximation
     ur_prob = np.exp(gmm_model.score(upper_bound))[0]
     ll_prob = np.exp(gmm_model.score(lower_bound))[0]
+    ul_prob = np.exp(gmm_model.score([upper_lat, left_lon]))[0]
+    lr_prob = np.exp(gmm_model.score([lower_lat, right_lon]))[0]
     center_prob = np.exp(gmm_model.score(center_point))[0]
-    dist_adjustment = np.mean([ur_prob, ll_prob])/center_prob
+    dist_adjustment = np.mean([ur_prob, ll_prob,ul_prob,lr_prob])/center_prob
 
     total_prob = initial_prob - (.2*dist_adjustment)*initial_prob
     if total_prob<0.0:
@@ -211,6 +223,24 @@ def predict_probability_radius(gmm_model, radius, center_point):
     elif total_prob>1.0:
         total_prob=1.0
     return total_prob
+
+
+def predict_user(sc, tweets_to_predict, fields, model, radius=None, predict_lower_bound=0):
+    """Takes a set of tweets and for each user in those tweets it predicts a location
+    Also returned are the probability of that prediction location being w/n 100 km of the true point"""
+
+    model_bcast = sc.broadcast(model)
+
+    tweets_by_user = tweets_to_predict.rdd.filter(lambda row: row.user!=None)\
+                        .keyBy(lambda row: row.user.id_str).groupByKey()
+
+    loc_est_by_user = tweets_by_user\
+        .mapValues(lambda tweets: list(itertools.chain(*[tokenize_tweet(tweet, fields) for tweet in tweets])))\
+        .flatMapValues(lambda tokens: get_most_likely_point(tokens, model_bcast, radius=radius))\
+        .filter(lambda (id_str, est_loc): est_loc.prob >= predict_lower_bound or radius is None)
+
+    return loc_est_by_user
+
 
 
 def train(sqlCtx, table_name, fields, min_occurrences=10, max_num_components=12, where_clause=''):
@@ -252,7 +282,7 @@ def run_test(sqlCtx, table_name, fields, model, where_clause=''):
 
     errors_rdd = tweets_w_geo.rdd.keyBy(lambda row: get_location_from_tweet(row))\
                                 .flatMapValues(lambda row: get_most_likely_point(tokenize(row, fields), model_bcast))\
-                                .map(lambda (true_geo_coord, est_geo_coord): haversine(true_geo_coord, est_geo_coord))
+                                .map(lambda (true_geo_coord, est_loc): haversine(true_geo_coord, est_loc.geo_coord))
 
     errors = np.array(errors_rdd.collect())
     num_vals = len(errors)
