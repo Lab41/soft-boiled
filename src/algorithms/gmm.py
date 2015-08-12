@@ -247,7 +247,7 @@ def train_gmm(sqlCtx, table_name, fields, min_occurrences=10, max_num_components
     return model
 
 
-def run_gmm_test(sqlCtx, table_name, fields, model, where_clause=''):
+def run_gmm_test(sc, sqlCtx, table_name, fields, model, where_clause=''):
     """ Test a pretrained model on a set of test data"""
     tweets_w_geo = sqlCtx.sql('select geo, entities,  extended_entities, %s from %s where geo.coordinates is not null %s'
                                    % (','.join(fields), table_name, where_clause))
@@ -256,7 +256,7 @@ def run_gmm_test(sqlCtx, table_name, fields, model, where_clause=''):
     model_bcast = sc.broadcast(model)
 
     errors_rdd = tweets_w_geo.rdd.keyBy(lambda row: get_location_from_tweet(row))\
-                                .flatMapValues(lambda row: get_most_likely_point(tokenize(row, fields), model_bcast))\
+                                .flatMapValues(lambda row: get_most_likely_point(tokenize_tweet(row, fields), model_bcast))\
                                 .map(lambda (true_geo_coord, est_loc): haversine(true_geo_coord, est_loc.geo_coord))
 
     errors = np.array(errors_rdd.collect())
