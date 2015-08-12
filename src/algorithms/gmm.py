@@ -169,6 +169,33 @@ class GMM(Algorithm):
         return distance
 
     @staticmethod
+    def compute_model(input_val, model=None, radius=100, predict_lower_bound=0.75):
+        """ Given a model that maps tokens -> GMMs this will compute the most likely point"""
+        #The function will not return any model where the probability is below a certain threshold
+        #Default is set to 75%, so that means we estimate that 75% of the time the true location is within 100km of the estimated location
+        #To remove this filter simply set predict_lower_bound to zero
+        tokens = input_val
+        model = model.value
+        models = []
+        for token in tokens:
+            if token in model:
+                models.append(model[token])
+        if len(models) > 1:
+            combined_gmm = GMM.combine_gmms(models)
+            (best_lat, best_lon) = combined_gmm.means_[np.argmax(combined_gmm.weights_)]
+            prob = GMM.predict_probability_radius(combined_gmm, radius, (best_lat, best_lon))
+        elif len(models) == 1:
+            (best_lat, best_lon) = models[0][0].means_[np.argmax(models[0][0].weights_)]
+            prob = GMM.predict_probability_radius(models[0][0], radius, (best_lat, best_lon))
+        else:
+            return ((0.0,0.0), np.nan)
+
+        if prob<predict_lower_bound:
+            return ((0.0,0.0), np.nan)
+
+        return ((best_lat, best_lon), prob)
+
+    @staticmethod
     def predict_probability_area(model, upper_bound, lower_bound):
         total_prob = 0
         for i in range(0, len(model.weights_)):
@@ -205,8 +232,10 @@ class GMM(Algorithm):
         #as we do not have a homegenous distribution this is a better approximation
         ur_prob = np.exp(gmm_model.score(upper_bound))[0]
         ll_prob = np.exp(gmm_model.score(lower_bound))[0]
+        ul_prob = np.exp(gmm_model.score([upper_lat, left_lon]))[0]
+        lr_prob = np.exp(gmm_model.score([lower_lat, right_lon]))[0]
         center_prob = np.exp(gmm_model.score(center_point))[0]
-        dist_adjustment = np.mean([ur_prob, ll_prob])/center_prob
+        dist_adjustment = np.mean([ur_prob, ll_prob,ul_prob,lr_prob])/center_prob
 
         total_prob = initial_prob - (.2*dist_adjustment)*initial_prob
         if total_prob<0.0:
@@ -361,4 +390,42 @@ class GMM(Algorithm):
                 row.extend([mean[LAT], mean[LON], weight, covar[0][0], covar[0][1], covar[1][0], covar[1][1]])
             csv_writer.writerow(row)
         output_file.close()
+
+    @staticmethod
+    def tokenize_user_tweets(user_tweets, fields = None):
+        all_tokens = []
+
+        for i in user_tweets:
+            loc, tokens = GMM.tokenize(i, fields=fields)
+            all_tokens.extend(tokens)
+
+        return (all_tokens)
+
+    def predict_user(self, tweets_to_predict, model=None, radius=100, predict_lower_bound=0.75):
+        """Takes a set of tweets and for each user in those tweets it predicts a location
+        Also returned are the probability of that prediction location being w/n 100 km of the true point"""
+
+        model_b = self.sc.broadcast(model.model)
+
+        #Assumes that tweets_to_predict is an RDD
+        tweets_by_user = tweets_to_predict.rdd.filter(lambda row: row.user!=None)\
+                            .keyBy(lambda row: row.user.id_str).groupByKey()
+
+        # for each tweet calculate most likely position
+        def compute_user_model(model2, radius, predict_lower_bound):
+            return (lambda x: GMM.compute_model(x, model=model2, radius=radius, predict_lower_bound=predict_lower_bound))
+
+        def tokenize_with_defaults(fields):
+            return (lambda x: GMM.tokenize_user_tweets(list(x), fields=fields))
+
+        user_function_w_closure = compute_user_model(model_b, radius, predict_lower_bound)
+
+        results = tweets_by_user.mapValues(tokenize_with_defaults(self.options['fields'])).mapValues(user_function_w_closure)
+
+        #map the results to a particular format (this is what is currently taken in by the SLP algorithm)
+        #filter out any locations which are at [0,0] i.e. were not found
+        results_final = results.map(lambda (id_str, ((lat, lon), prob)): (id_str, ([lat, lon], prob, 0.0, 0.0)))\
+            .filter(lambda (id_str,(ll, prob,a,b)): ll[0]!=0.0 and ll[1]!=0.0)
+
+        return results_final
 
