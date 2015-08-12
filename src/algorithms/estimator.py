@@ -1,7 +1,7 @@
 import csv
 import matplotlib.pyplot as plt
 import numpy as np
-from src.algorithms.slp2 import haversine, median
+from src.algorithms.slp import haversine, median
 
 class EstimatorCurve:
 
