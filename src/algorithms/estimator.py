@@ -111,8 +111,9 @@ class EstimatorCurve:
                 the collect
 
         Returns:
-            curve (numpy.ndarray): two dimensional array representing the curve. Column 0 is the
-                sorted stdevs and column 1 is the percentage for the CDF.
+            curve (numpy.ndarray): two dimensional array representing the curve.
+
+            Column 0 is the sorted stdevs and column 1 is the percentage for the CDF.
         '''
 
         cnt = vals.count()
@@ -138,8 +139,7 @@ class EstimatorCurve:
             num_std_devs (float): the stdev to lookup
 
         Returns:
-            CDF (float) : Percentage of actual locations found to be within the input
-                stdev
+            CDF (float) : Percentage of actual locations found to be within the input stdev
         '''
 
         max_std = np.max(self.w_stdev[0])
