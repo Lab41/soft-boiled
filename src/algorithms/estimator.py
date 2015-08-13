@@ -142,12 +142,15 @@ class EstimatorCurve:
             CDF (float) : Percentage of actual locations found to be within the input stdev
         '''
 
-        max_std = np.max(self.w_stdev[0])
-        min_std = np.min(self.w_stdev[0])
+        max_std = np.max(self.w_stdev[:, 0])
+        min_std = np.min(self.w_stdev[:, 0])
 
         if (num_std_devs < max_std and num_std_devs > min_std) :
             arr = np.absolute(self.w_stdev-np.array([num_std_devs,0]))
             return arr[arr[:,0].argsort()][0][1]
+        else if num_std_devs == 0:
+            print("reference the stdev == 0 curve")
+            return -1
         else:
             return 1
 
