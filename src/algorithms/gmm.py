@@ -260,7 +260,7 @@ def run_gmm_test(sc, sqlCtx, table_name, fields, model, where_clause=''):
                                 .map(lambda (true_geo_coord, est_loc): haversine(true_geo_coord, est_loc.geo_coord))
 
     errors = np.array(errors_rdd.collect())
-    num_vals = len(errors)
+    num_vals = tweets_w_geo.count()
     errors = errors[np.isnan(errors) == False]
 
     median_error = np.median(errors)
