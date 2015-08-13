@@ -165,7 +165,7 @@ def run_slp_test(original_locs_known, estimated_locs,  holdout_func):
     }
 
 
-def predict_country(tweets, bounding_boxes):
+def predict_country_slp(tweets, bounding_boxes):
     '''
     Take a set of estimates of user locations and estimate the country that user is in
 
@@ -187,12 +187,12 @@ def predict_country(tweets, bounding_boxes):
     bounding_boxes_bcast = sc.broadcast(bounding_boxes)
 
     # Do country lookups and return an RDD that is (id_str, [country_codes])
-    return tweets.mapValues(lambda loc_estimate: _predict_country_using_lookup(loc_estimate,\
+    return tweets.mapValues(lambda loc_estimate: _predict_country_using_lookup_slp(loc_estimate,\
                                                                               bb_lookup_lat_bcast,
                                                                               bb_lookup_lon_bcast,
                                                                               bounding_boxes_bcast))
 
-def _predict_country_using_lookup(loc_estimate, lat_dict, lon_dict, bounding_boxes):
+def _predict_country_using_lookup_slp(loc_estimate, lat_dict, lon_dict, bounding_boxes):
     '''
     Internal helper function that uses broadcast lookup tables to take a single location estimate and show
         what country bounding boxes include that point
