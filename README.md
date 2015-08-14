@@ -57,7 +57,7 @@ tweets.registerTempTable('my_tweets')
 gmm_model = train_gmm(sqlCtx, 'my_tweets', ['user.location', 'text'], min_occurrences=10, max_num_components=12)
 
 # Test GMM model
-test_results = run_gmm_test(sqlCtx, 'my_tweets', ['user.location', 'text'], gmm_model)
+test_results = run_gmm_test(sc, sqlCtx, 'my_tweets', ['user.location', 'text'], gmm_model)
 print test_results
 
 # Use GMM model to predict tweets

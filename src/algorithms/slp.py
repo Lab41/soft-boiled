@@ -9,8 +9,15 @@ LocEstimate = namedtuple('LocEstimate', ['geo_coord', 'dispersion', 'dispersion_
 
 def median(distance_func, vertices, weights=None):
     """
-        given a python list of vertices, and a distance function, this will find the vertex that is most central
-        relative to all other vertices. All of the vertices must have geocoords
+    given a python list of vertices, and a distance function, this will find the vertex that is most central
+    relative to all other vertices. All of the vertices must have geocoords
+
+    Args:
+        distance_func (function) : A function to calculate the distance between two GeoCoord objects
+        vertices (list) : List of GeoCoord objects
+
+    Returns:
+        LocEstimate: The median point
     """
 
     #get the distance between any two points
@@ -46,12 +53,24 @@ def median(distance_func, vertices, weights=None):
 
 def get_known_locs(sqlCtx, table_name, min_locs=3, num_partitions=30, dispersion_threshold=50):
     '''
-        Given a loaded twitter table, this will return all the twitter users with locations. A user's location is determined
-        by the median location of all known tweets. A user must have at least min_locs locations in order for a location to be
-        estimated
-        '''
-    # Geo Coords
+    Given a loaded twitter table, this will return all the twitter users with locations. A user's location is determined
+    by the median location of all known tweets. A user must have at least min_locs locations in order for a location to be
+    estimated
 
+
+    Args:
+        sqlCtx (Spark SQL Context) :  A Spark SQL context
+        table_name (string): Table name that was registered when loading the data
+        min_locs (int) : Minimum number tweets that have a location in order to infer a location for the user
+        num_partitions (int) : Optimizer for specifying the number of partitions for the resulting
+            RDD to use.
+        dispersion_threhold (int) : A distance threhold on the dispersion of the estimated location for a user.
+            We consider those estimated points with dispersion greater than the treshold unable to be
+            predicted given how dispersed the tweet distances are from one another.
+
+    Returns:
+        locations (rdd of LocEstimate) : Found locations of users. This rdd is often used as the ground truth of locations
+    '''
 
     geo_coords = sqlCtx.sql('select user.id_str, geo.coordinates from %s where geo.coordinates is not null' % table_name)\
         .map(lambda row: (row.id_str, row.coordinates))
@@ -71,8 +90,18 @@ def get_known_locs(sqlCtx, table_name, min_locs=3, num_partitions=30, dispersion
 
 def get_edge_list(sqlCtx, table_name, num_partitions=300):
     '''
-        Given a loaded twitter table, this will return the @mention network in the form (src_id, (dest_id, num_@mentions))
-        '''
+
+    Given a loaded twitter table, this will return the @mention network in the form (src_id, (dest_id, num_@mentions))
+
+    Args:
+        sqlCtx (Spark SQL Context) : A Spark SQL context
+        table_name (string) : Table name that was registered when loading the data
+        num_paritions (int) : Optimizer for specifying the number of paritions for the resulting RDD to use
+
+    Returns:
+        edges (rdd (src_id, (dest_id, weight))) : edges loaded from the table
+
+    '''
     tmp_edges = sqlCtx.sql('select user.id_str, entities.user_mentions from %s where size(entities.user_mentions) > 0' % table_name)\
         .flatMap(lambda row : [((row.id_str, mentioned_user.id_str),1)\
                                for mentioned_user in row.user_mentions\
@@ -84,7 +113,19 @@ def get_edge_list(sqlCtx, table_name, num_partitions=300):
             .map(lambda ((src_id,dest_id), (count0, count1)): (src_id, (dest_id, min(count0,count1))))\
             .coalesce(num_partitions).cache()
 
+
 def run(sqlCtx, table_name, holdout_function=None):
+    '''
+    runs the SLP algorithm (TODO)
+
+    Args:
+        table_name (string) : Table name that was registered when loading the data
+        holdout_function (function) : Function that will be used to filter out a holdout
+            test data set
+
+    Returns:
+        locations (rdd of LocEstimate objects) : locations found and known
+    '''
 
     all_locs_known = get_known_locs(sqlCtx, table_name)
     if holdout_function:
@@ -98,21 +139,21 @@ def run(sqlCtx, table_name, holdout_function=None):
 
 def train_slp(locs_known, edge_list, num_iters, neighbor_threshold=3, dispersion_threshold=100):
     '''
-        Inputs:
-        locs_known => (src_id, vertex)
-        edge_list  => (src_id, (dest_id, weight))
-        line 0:  attach the locations to each of the sources in the edges... (src_id, ((dst_id, weight), src_vertex))
-        line 1:  get the src and coord in value in prep for group by...      (dst_id, (Vertex, weight))
-        line 2:  filter out those edges where a Vertex has no geoCoord...    (dst_id, (Vertex, weight)) #has geocoord
-        line 3:  group by in prep for neighbor operations...                 (dst_id, [(Vertex, weight)..])
-        line 4:  filter out nodes with fewer than 2 neighbors...             (dst_id, [(Vertex, weight)..]) # >2
-        line 5:  add back in known locs so we only predict unknown...        (dst_id, ([(Vertex, weight)..], hasLoc))
-        line 6:  only keep the nodes we are trying to predict...             (dst_id, ([(Vertex, weight)..], hasLoc))
-        line 7:  apply the median to the neighbors...                        (dst_id, (median_vtx, neighbors))
-        line 8:  given the median, filter out high dispersion....            (dst_id, (median_vtx, neighbors)) <disp
-        line 9:  prepare for the union by adjusting format...                (dst_id, median_coord)
-        line 8:  union to create the global location rdd...                  (dst_id, median_geoCoord)
-        '''
+    Core SLP algorithm
+
+    Args:
+        locs_known (rdd of LocEstimate objects) : Locations that are known for the SLP network
+        edge_list (rdd of edges (src_id, (dest_id, weight))) : edges representing the at mention
+            network
+        num_iters (int) : number of iterations to run the algorithm
+        neighbor_threshold (int) : The minimum number of neighbors required in order for SLP to
+            try and predict a location of a node in the network
+        dispersion_theshold (int) : The maximum median distance amoung a local at mention network
+            in order to predict a node's location.
+
+    Returns:
+        locations (rdd of LocEstimate objects) : The locations found and known
+    '''
 
     num_partitions = edge_list.getNumPartitions()
 
@@ -130,18 +171,30 @@ def train_slp(locs_known, edge_list, num_iters, neighbor_threshold=3, dispersion
             .filter(lambda (src_id, neighbors) : neighbors.maxindex >= neighbor_threshold)\
             .map(lambda (src_id, neighbors) :\
                  (src_id, median(haversine, [v for v,w in neighbors],[w for v,w in neighbors])))\
-                 .filter(lambda (src_id, estimated_loc): estimated_loc.dispersion < dispersion_threshold)\
-                 .union(locs_known).coalesce(num_partitions)
+            .filter(lambda (src_id, estimated_loc): estimated_loc.dispersion < dispersion_threshold)\
+            .union(locs_known).coalesce(num_partitions)
 
     return l
 
 
-#holdout_10pct = lambda (src_id) : src_id[-1] != '6'
-
-
 def run_slp_test(original_locs_known, estimated_locs,  holdout_func):
     '''
-        '''
+    This function is used to assess various stats regarding how well SLP is running.
+
+    Args:
+        original_locs_known (rdd of LocEstimate objects) : The complete list of locations
+        estimated_locs (rdd of LocEstimate objects) : The estinated locations
+        holdout_func (function) : function responsible for filtering a holdout data set
+            For example, lambda (src_id) : src_id[-1] != '6' can be used to get approximately
+            10% of the data since the src_id's are evenly distributed numeric values
+
+    Returns:
+        results (dict) : stats of the results from the SLP algorithm
+
+        includes the median and mean difference from estimated and actual distances.
+        Includes the coverage of locations found compared to locations that were not
+        known prior, and finally the number of locations
+    '''
 
     reserved_locs = original_locs_known.filter(lambda (src_id, loc): not holdout_func(src_id))
     num_locs = reserved_locs.count()
@@ -159,9 +212,9 @@ def run_slp_test(original_locs_known, estimated_locs,  holdout_func):
     #With larger datasets, we may need to do this in the cluster, but for now will leave.
     return {
         'median': np.median(errors_local),
-            'mean': np.mean(errors_local),
-            'coverage':len(errors_local)/float(num_locs),
-            'num_locs': num_locs
+        'mean': np.mean(errors_local),
+        'coverage':len(errors_local)/float(num_locs),
+        'num_locs': num_locs
     }
 
 
@@ -169,9 +222,14 @@ def predict_country_slp(tweets, bounding_boxes):
     '''
     Take a set of estimates of user locations and estimate the country that user is in
 
-    tweets: RDD of (id_str, LocEstimate)
-    bounding_boxes: list [(country_code, (min_lat, max_lat, min_lon, max_lon)),...]
+    Args:
+        tweets (RDD  (id_str, LocEstimate))
+        bounding_boxes (list [(country_code, (min_lat, max_lat, min_lon, max_lon)),...])
+
+    Returns:
+        Country Codes (list) : Predicted countries reperesented as their numeric codes
     '''
+
     # Convert Bounding boxes to allow for more efficient lookups
     bb_lookup_lat = defaultdict(set)
     bb_lookup_lon = defaultdict(set)
@@ -181,27 +239,30 @@ def predict_country_slp(tweets, bounding_boxes):
         for lat in range(int(math.floor(min_lat)), int(math.ceil(max_lat))):
             bb_lookup_lat[lat].add(i)
 
-    # broadcast to make more efficient
-    bb_lookup_lat_bcast = sc.broadcast(bb_lookup_lat)
-    bb_lookup_lon_bcast = sc.broadcast(bb_lookup_lon)
-    bounding_boxes_bcast = sc.broadcast(bounding_boxes)
 
     # Do country lookups and return an RDD that is (id_str, [country_codes])
     return tweets.mapValues(lambda loc_estimate: _predict_country_using_lookup_slp(loc_estimate,\
-                                                                              bb_lookup_lat_bcast,
-                                                                              bb_lookup_lon_bcast,
-                                                                              bounding_boxes_bcast))
+        sc.broadcast(bb_lookup_lat),\
+        sc.broadcast(bb_lookup_lon),\
+        sc.broadcast(bounding_boxes)))
+
 
 def _predict_country_using_lookup_slp(loc_estimate, lat_dict, lon_dict, bounding_boxes):
     '''
     Internal helper function that uses broadcast lookup tables to take a single location estimate and show
         what country bounding boxes include that point
 
-    loc_estimate: LocEstimate
-    lat_dict: broadcast dictionary {integer_lat:set([bounding_box_indexes containing this lat])}
-    lon_dict: broadcast dictionary {integer_lon:set([bounding_box_indexes containing this lon])}
-    bounding_boxes: broadcast list [(country_code, (min_lat, max_lat, min_lon, max_lon)),...]
+    Args:
+        loc_estimate (LocEstimate) : Estimate location
+        lat_dict (broadcast dictionary {integer_lat:set([bounding_box_indexes containing this lat])}) :
+            Indexed lookup dictionary for finding countries that exist at the specified latitude
+        lon_dict ((broadcast dictionary) {integer_lon:set([bounding_box_indexes containing this lon])})) :
+            Index lookup dictionary for finding countries that exist at the speficied longitude
+        bounding_boxes (broadcast list [(country_code, (min_lat, max_lat, min_lon, max_lon)),...]) :
+            List of countries and their boudning boxes
+
     '''
+
     lat = loc_estimate.geo_coord.lat
     lon = loc_estimate.geo_coord.lon
     countries = set()
