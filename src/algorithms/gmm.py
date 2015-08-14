@@ -13,11 +13,15 @@ from collections import namedtuple, defaultdict
 GMMLocEstimate = namedtuple('LocEstimate', ['geo_coord', 'prob'])
 
 def get_location_from_tweet(row):
-    '''
+    """
     Extract location from a tweet object. If geo.coordinates not present use center of place.bounding_box.
 
-    row: Row [tweet]
-    '''
+    Args:
+        row (Row): A spark sql row containing a tweet
+
+    Retruns:
+        GeoCoord: The location in the tweet
+    """
     # Get true location
     if row.geo and row.geo.type == 'Point':
         ll = row.geo.coordinates
@@ -33,11 +37,15 @@ def get_location_from_tweet(row):
 
 
 def tokenize_tweet(inputRow, fields):
-    """Initial attempt at tokenizing strings
-    Params:
-      inputRow: a pyspark row
-    Output:
-    tokens: a tuple of the location of the tweet and a list of tokens in the tweet
+    """
+    A simple tokenizer that takes a tweet as input and, splitting on whitespace, and returns words in the tweet
+
+    Args:
+      inputRow (Row): A spark sql row containing a tweet
+      fields (list): A list of field names which directs tokenize on which fields to use as source data
+
+    Returns:
+        tokens (list): A list of words appearing in the tweet
     """
     # Allow us to select which fields get pulled for model
     text = []
@@ -71,7 +79,16 @@ def tokenize_tweet(inputRow, fields):
 
 
 def get_errors(model, points):
-    """Computes the median error for a GMM and a set of training points"""
+    """
+    Computes the median error for a GMM model and a set of training points
+
+    Args:
+        model (mixture.GMM): A GMM model for a word
+        points (list): A list of (lat, lon) tuples
+
+    Returns:
+        median (float): The median distance to the training points from the most likely point
+    """
     (best_lat, best_lon) = model.means_[np.argmax(model.weights_)]
     best_point = GeoCoord(lat=best_lat, lon=best_lon)
     errors = []
@@ -79,11 +96,21 @@ def get_errors(model, points):
         point = GeoCoord(lat, lon)
         error = haversine(best_point, point)
         errors.append(error)
-    return np.median(errors)
+    median = np.median(errors)
+    return median
 
 
 def fit_gmm_to_locations(geo_coords, max_num_components):
-    """ Searches within bounts to fit a GMM with the optimal number of components"""
+    """
+    Searches within bounts to fit a GMM with the optimal number of components
+
+    Args:
+        geo_coords (list): A list of GeoCoord points to fit a GMM distribution to
+        max_num_components (int): The maximum number of components that the GMM model can have
+
+    Returns:
+        gmm_estimate (tuple): Tuple containing the best mixture.GMM and the error of that model on the training data
+    """
     # GMM Code expects numpy arrays not named tuples
     data_array = []
     for geo_coord in geo_coords:
@@ -107,7 +134,15 @@ def fit_gmm_to_locations(geo_coords, max_num_components):
 
 
 def combine_gmms(gmms):
-    """ Takes an array of gaussian mixture models and produces a GMM that is the weighted sum of the models"""
+    """
+    Takes an array of gaussian mixture models and produces a GMM that is the weighted sum of the models
+
+    Args:
+        gmms (list): A list of (mixture.GMM, median_error_on_training) models
+
+    Returns:
+        new_gmm (mixture.GMM): A single GMM model that is the weighted sum of the input gmm models
+    """
     n_components = sum([g[0].n_components for g in gmms])
     covariance_type = gmms[0][0].covariance_type
     new_gmm = mixture.GMM(n_components=n_components, covariance_type=covariance_type)
@@ -123,8 +158,14 @@ def get_most_likely_point(tokens, model_bcast, radius=None):
     '''
     Create the combined GMM and find the most likely point. This function is called in a flatMap so return a list with
     0 or 1 item
-    tokens: list of str, words in tweet
-    model: dictionary {word:GMM}
+
+    Args:
+        tokens (list): list of words in tweet
+        model_bcast (pyspark.Broadcast): A broadcast version of a dictionary of GMM model for the entire vocabulary
+        radius (float): Distance from most likely point at which we should estimate containment probability (if not None)
+
+    Returns:
+        loc_estimate (list): A list with 0 or 1 GMMLocEstimates
     '''
     model = model_bcast.value
     models = []
@@ -152,6 +193,17 @@ def get_most_likely_point(tokens, model_bcast, radius=None):
 
 
 def predict_probability_area(model, upper_bound, lower_bound):
+    """
+    Predict the probability that the true location is within a specified bounding box given a GMM model
+
+    Args:
+        model (mixture.GMM): GMM model to use
+        upper_bound (list): [upper lat, right lon] of bounding box
+        lower_bound (list): [lower_lat, left_lon] of bounding box
+
+    Returns:
+        total_prob (float): Probability from 0 to 1 of true location being in bounding box
+    """
     total_prob = 0
     for i in range(0, len(model.weights_)):
         val = ext.mvnormcdf(upper_bound, model.means_[i], model.covars_[i], lower_bound, maxpts=2000)
@@ -166,6 +218,18 @@ def predict_probability_area(model, upper_bound, lower_bound):
 
 
 def predict_probability_radius(gmm_model, radius, center_point):
+    """
+    Attempt to estimate the probability that the true location is within some radius of a given center point.
+    Estimate is based on estimating probability in corners of bounding box and subtracting from total probability mass
+
+    Args:
+        gmm_model (mixture.GMM): GMM model to use
+        radius (float): Radius from center point to include in estimate
+        center_point (tuple): (lat, lon) center point
+
+    Return:
+        total_prob (float): Probability from 0 to 1 of true location being in the specified radius
+    """
     total_prob = 0
     # determine the upper and lower bounds based on a km radius
     center_lat = center_point[0]
@@ -201,8 +265,21 @@ def predict_probability_radius(gmm_model, radius, center_point):
 
 
 def predict_user_gmm(sc, tweets_to_predict, fields, model, radius=None, predict_lower_bound=0):
-    """Takes a set of tweets and for each user in those tweets it predicts a location
-    Also returned are the probability of that prediction location being w/n 100 km of the true point"""
+    """
+    Takes a set of tweets and for each user in those tweets it predicts a location
+    Also returned are the probability of that prediction location being w/n 100 km of the true point
+
+    Args:
+        sc (pyspark.SparkContext): Spark Context to use for execution
+        tweets_to_predict (RDD): RDD of twitter Row objects
+        fields (list): List of field names to extract and then use for GMM prediction
+        model (dict): Dictionary of {word:(mixture.GMM, error)}
+        radius (float): Distance from most likely point at which we should estimate containment probability (if not None)
+        predict_lower_bound (float): Probability hreshold below which we should filter tweets
+
+    Returns:
+        loc_est_by_user (RDD): An RDD of (id_str, GMMLocEstimate)
+    """
 
     model_bcast = sc.broadcast(model)
 
@@ -219,7 +296,20 @@ def predict_user_gmm(sc, tweets_to_predict, fields, model, radius=None, predict_
 
 
 def train_gmm(sqlCtx, table_name, fields, min_occurrences=10, max_num_components=12, where_clause=''):
-    """ Train a set of GMMs for a given set of training data"""
+    """
+    Train a set of GMMs for a given set of training data
+
+    Args:
+        sqlCtx (pyspark.sql.SQLContext): Spark SQL Context to use for sql queries
+        table_name (str): Table name to query for test data
+        fields (list): List of field names to extract and then use for GMM prediction
+        min_occurrences (int): Number of times a word must appear to be incldued in the model
+        max_num_components (int): The maximum number of components that the GMM model can have
+        where_clause (str): A where clause that can be applied to the query
+
+    Returns:
+        model (dict): Dictionary of {word:(mixture.GMM, error)}
+    """
 
     tweets_w_geo = sqlCtx.sql('select geo, place, entities,  extended_entities, %s from %s where (geo.coordinates is not null \
                                     or (place is not null and place.bounding_box.type="Polygon")) %s'
@@ -248,7 +338,20 @@ def train_gmm(sqlCtx, table_name, fields, min_occurrences=10, max_num_components
 
 
 def run_gmm_test(sc, sqlCtx, table_name, fields, model, where_clause=''):
-    """ Test a pretrained model on a set of test data"""
+    """
+    Test a pretrained model on a table of test data
+
+    Args:
+        sc (pyspark.SparkContext): Spark Context to use for execution
+        sqlCtx (pyspark.sql.SQLContext): Spark SQL Context to use for sql queries
+        table_name (str): Table name to query for test data
+        fields (list): List of field names to extract and then use for GMM prediction
+        model (dict): Dictionary of {word:(mixture.GMM, error)}
+        where_clause (str): A where clause that can be applied to the query
+
+    Returns:
+        final_result (dict): A description of the performance of the GMM Algorithm
+    """
     tweets_w_geo = sqlCtx.sql('select geo, entities,  extended_entities, %s from %s where geo.coordinates is not null %s'
                                    % (','.join(fields), table_name, where_clause))
 
@@ -274,12 +377,16 @@ def run_gmm_test(sc, sqlCtx, table_name, fields, model, where_clause=''):
 
 
 def predict_country_gmm(tweets, bounding_boxes):
-    '''
+    """
     Take a set of estimates of user locations and estimate the country that user is in
 
-    tweets: RDD of (id_str, LocEstimate)
-    bounding_boxes: list [(country_code, (min_lat, max_lat, min_lon, max_lon)),...]
-    '''
+    Args:
+        tweets (pyspark.RDD): RDD of (id_str, LocEstimate)
+        bounding_boxes (list): list [(country_code, (min_lat, max_lat, min_lon, max_lon)),...]
+
+    Returns:
+        tweets (pyspark.RDD): An RDD of (id_str, [countries])
+    """
     # Convert Bounding boxes to allow for more efficient lookups
     bb_lookup_lat = defaultdict(set)
     bb_lookup_lon = defaultdict(set)
@@ -302,15 +409,19 @@ def predict_country_gmm(tweets, bounding_boxes):
 
 
 def _predict_country_using_lookup_gmm(loc_estimate, lat_dict, lon_dict, bounding_boxes):
-    '''
+    """
     Internal helper function that uses broadcast lookup tables to take a single location estimate and show
         what country bounding boxes include that point
 
-    loc_estimate: LocEstimate
-    lat_dict: broadcast dictionary {integer_lat:set([bounding_box_indexes containing this lat])}
-    lon_dict: broadcast dictionary {integer_lon:set([bounding_box_indexes containing this lon])}
-    bounding_boxes: broadcast list [(country_code, (min_lat, max_lat, min_lon, max_lon)),...]
-    '''
+    Args:
+        loc_estimate (GMMLocEstimate):
+        lat_dict (pyspark.Broadcast): broadcast dictionary {integer_lat:set([bounding_box_indexes containing this lat])}
+        lon_dict (pyspark.Broadcast): broadcast dictionary {integer_lon:set([bounding_box_indexes containing this lon])}
+        bounding_boxes (pyspark.Broadcast): broadcast list [(country_code, (min_lat, max_lat, min_lon, max_lon)),...]
+
+    Returns:
+        countries (list): List of potential countries containing the location estimate
+    """
     lat = loc_estimate.geo_coord.lat
     lon = loc_estimate.geo_coord.lon
     countries = set()
@@ -329,7 +440,15 @@ def _predict_country_using_lookup_gmm(loc_estimate, lat_dict, lon_dict, bounding
 
 
 def load_model(input_fname):
-    """Load a pre-trained model"""
+    """
+    Load a pre-trained model
+
+    Args:
+        input_fname (str): Local file path to read GMM model from
+
+    Returns:
+        model (dict): A dictionary of the form {word: (mixture.GMM, error)}
+    """
     model = {}
     if input_fname.endswith('.gz'):
         input_file = gzip.open(input_fname, 'rb')
@@ -373,7 +492,13 @@ def load_model(input_fname):
 
 
 def save_model(model, output_fname):
-    """Save the current model for future use"""
+    """
+    Save the current model for future use
+
+    Args:
+        model (dict): A dictionary of the form {word: (mixture.GMM, error)}
+        output_fname (str): Local file path to store GMM model
+    """
     if output_fname.endswith('.gz'):
         output_file = gzip.open(output_fname, 'w')
     else:
