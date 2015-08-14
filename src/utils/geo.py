@@ -27,10 +27,11 @@ def haversine(x, y):
 
 
 def bb_center(row):
-    """ Takes a twitter place bounding box (in lon, lat) and returns the center point based on deicmal degrees"""
+    """ Takes a twitter place bounding box (in lon, lat) and returns the centroid of the quadrilateral (in lat, lon)."""
     bb_coords = row[0]
-    avg_lon = (bb_coords[0][0] + bb_coords[3][0])/2
-    avg_lat = (bb_coords[0][1] + bb_coords[2][1])/2
+
+    avg_lon = (bb_coords[0][0] + bb_coords[1][0] + bb_coords[2][0] + bb_coords[3][0])/4
+    avg_lat = (bb_coords[0][1] + bb_coords[1][1] + bb_coords[2][1] + bb_coords[3][1])/4
 
     return [avg_lat,avg_lon]
 
