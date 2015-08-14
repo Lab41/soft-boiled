@@ -11,10 +11,13 @@ Contents:
 .. toctree::
    :maxdepth: 2
 
-.. automodule:: src.algorithms.estimator
+.. automodule:: src.algorithms.slp
     :members:
     :undoc-members:
-.. automodule:: src.algorithms.slp
+.. automodule:: src.algorithms.gmm
+    :members:
+    :undoc-members:
+.. automodule:: src.algorithms.estimator
     :members:
     :undoc-members:
 .. autoclass:: src.algorithms.estimator.EstimatorCurve
