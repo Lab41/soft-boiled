@@ -143,7 +143,7 @@ def get_most_likely_point(tokens, model_bcast, radius=None):
     elif len(models) == 1:
         (best_lat, best_lon) = models[0][0].means_[np.argmax(models[0][0].weights_)]
         if radius:
-            prob = predict_probability_radius(combined_gmm, radius, (best_lat, best_lon))
+            prob = predict_probability_radius(models[0][0], radius, (best_lat, best_lon))
             return [GMMLocEstimate(GeoCoord(lat=best_lat, lon=best_lon), prob)]
         else:
             return [GMMLocEstimate(GeoCoord(lat=best_lat, lon=best_lon), None)]
@@ -179,7 +179,7 @@ def predict_probability_radius(gmm_model, radius, center_point):
 
     upper_bound = [upper_lat, right_lon]
     lower_bound = [lower_lat, left_lon]
-    initial_prob = GMM.predict_probability_area(gmm_model, upper_bound, lower_bound)
+    initial_prob = predict_probability_area(gmm_model, upper_bound, lower_bound)
 
     #remove the corner probabilities to better estimate the area
     #determine the approximate probability distribution at the corners vs the center
