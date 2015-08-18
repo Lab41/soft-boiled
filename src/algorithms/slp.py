@@ -114,29 +114,6 @@ def get_edge_list(sqlCtx, table_name, num_partitions=300):
             .coalesce(num_partitions).cache()
 
 
-def run(sqlCtx, table_name, holdout_function=None):
-    '''
-    runs the SLP algorithm (TODO)
-
-    Args:
-        table_name (string) : Table name that was registered when loading the data
-        holdout_function (function) : Function that will be used to filter out a holdout
-            test data set
-
-    Returns:
-        locations (rdd of LocEstimate objects) : locations found and known
-    '''
-
-    all_locs_known = get_known_locs(sqlCtx, table_name)
-    if holdout_function:
-        filtered_locs_known = all_locs_known.filter(lambda (id_str, loc_estimate): holdout_function(id_str))
-    else:
-        filtered_locs_known = all_locs_known
-    edge_list = get_edge_list(sqlCtx, table_name)
-    result = train(locs_known, edge_list)
-    return result
-
-
 def train_slp(locs_known, edge_list, num_iters, neighbor_threshold=3, dispersion_threshold=100):
     '''
     Core SLP algorithm
@@ -176,33 +153,68 @@ def train_slp(locs_known, edge_list, num_iters, neighbor_threshold=3, dispersion
 
     return l
 
-
-def run_slp_test(original_locs_known, estimated_locs,  holdout_func):
+def evaluate(locs_known, edges, holdout_func, slp_closure):
     '''
     This function is used to assess various stats regarding how well SLP is running.
+    Given all locs that are known and all edges that are known, this funciton will first
+    apply the holdout to the locs_known, allowing for a ground truth comparison to be used.
+    Then, it applies the non-holdout set to the training function, which should yield the
+    locations of the holdout for comparison.
+
+        For example::
+
+            holdout = lambda (src_id) : src_id[-1] == '6'
+            trainer = lambda l, e : slp.train_slp(l, e, 3)
+            results = evaluate(locs_known, edges, holdout, trainer)
 
     Args:
-        original_locs_known (rdd of LocEstimate objects) : The complete list of locations
-        estimated_locs (rdd of LocEstimate objects) : The estinated locations
-        holdout_func (function) : function responsible for filtering a holdout data set
-            For example, lambda (src_id) : src_id[-1] != '6' can be used to get approximately
-            10% of the data since the src_id's are evenly distributed numeric values
+        locs_known (rdd of LocEstimate objects) : The complete list of locations
+
+        edges (rdd of (src_id, (dest_id, weight)): all available edge information
+
+        holdout_func (function) : function responsible for filtering a holdout data set. For example::
+
+                lambda (src_id) : src_id[-1] != '6'
+
+            can be used to get approximately 10% of the data since the src_id's are evenly distributed numeric values
+
+        slp_closure (function closure): a closure over the slp train function. For example::
+
+                lambda locs, edges :\n
+                        slp.train_slp(locs, edges, 4, neighbor_threshold=4, dispersion_threshold=150)
+
+            can be used for training with specific threshold parameters
+
 
     Returns:
         results (dict) : stats of the results from the SLP algorithm
 
-        includes the median and mean difference from estimated and actual distances.
-        Includes the coverage of locations found compared to locations that were not
-        known prior, and finally the number of locations
-    '''
+            `median:` median difference of predicted versus actual
 
-    reserved_locs = original_locs_known.filter(lambda (src_id, loc): not holdout_func(src_id))
+            `mean:` mean difference of predicted versus actual
+
+            `coverage:` ratio of number of predicted locations to number of  original unknown locations
+
+            `reserved_locs:` number of known locations used to train
+
+            `total_locs:` number of known locations input into this function
+
+            `found_locs:` number of predicted locations
+
+            `holdout_ratio:` ratio of the holdout set to the entire set
+        '''
+
+    reserved_locs = locs_known.filter(lambda (src_id, loc): not holdout_func(src_id))
     num_locs = reserved_locs.count()
+    total_locs = locs_known.count()
 
+    print('Total Locations %s' % total_locs)
 
-    errors = estimated_locs\
-        .filter(lambda (src_id, loc): not holdout_func(src_id))\
-        .join(reserved_locs)\
+    results = slp_closure(reserved_locs, edges)
+
+    errors = results\
+        .filter(lambda (src_id, loc): holdout_func(src_id))\
+        .join(locs_known)\
         .map(lambda (src_id, (vtx_found, vtx_actual)) :\
              haversine(vtx_found.geo_coord, vtx_actual.geo_coord))
 
@@ -213,10 +225,12 @@ def run_slp_test(original_locs_known, estimated_locs,  holdout_func):
     return {
         'median': np.median(errors_local),
         'mean': np.mean(errors_local),
-        'coverage':len(errors_local)/float(num_locs),
-        'num_locs': num_locs
+        'coverage':len(errors_local)/float(total_locs - num_locs),
+        'reserved_locs': num_locs,
+        'total_locs':total_locs,
+        'found_locs': len(errors_local),
+        'holdout_ratio' : 1 - num_locs/float(total_locs)
     }
-
 
 def predict_country_slp(tweets, bounding_boxes):
     '''

@@ -9,27 +9,31 @@ The usage examples below assume that you have created a zip file containing the 
 ```python
 sc.addPyFile ('/path/to/zip/soft-boiled.zip') # Can be an hdfs path
 from src.algorithms.slp import *
+import src.algorithms.slp as slp
 
 # Create dataframe from parquet data
 tweets = sqlCtx.read.parquet('hdfs:///post_etl_datasets/twitter')
 tweets.registerTempTable('my_tweets')
 
 # Get Known Locations
-locs_known = get_known_locs(sqlCtx, 'my_tweets', min_locs=3, dispersion_threshold=50, num_partitions=30)
-
-# Filter locs_known to get training split
-holdout_10pct = lambda (src_id): src_id[-1] != '9'
-filtered_locs_known = locs_known.filter(lambda (id_str, loc_estimate): holdout_10pct(id_str))
+locs_known = slp.get_known_locs(sqlCtx, 'my_tweets', min_locs=3, dispersion_threshold=50, num_partitions=30)
 
 # Get at mention network, bi-directional at mentions
-edge_list = get_edge_list(sqlCtx, 'my_tweets')
+edge_list = slp.get_edge_list(sqlCtx, 'my_tweets')
 
 # Run spaital label propagation with 5 iterations
-estimated_locs = train_slp(filtered_locs_known, edge_list, 5, dispersion_threshold=100)
+estimated_locs = slp.train_slp(filtered_locs_known, edge_list, 5, dispersion_threshold=100)
+
+
+# prepare the input functions to the evaluate function. In this case, we create a holdout function
+# that filter approximately 10% of the data for testing, and we also have a closure that prepopulates
+# some of the parameters to the train_slp function
+holdout_10pct = lambda (src_id): src_id[-1] != '9'
+train_f = lambda locs, edges : slp.train_slp(locs, edges, 4, neighbor_threshold=4, dispersion_threshold=150) 
 
 # Test results
-test_results = run_slp_test(locs_known, estimated_locs, holdout_10pct)
-print test_results
+test_results = slp.evaluate(locs_known, edge_list, holdout_10pct, train_f)
+
 ```
 
 ### Options:
