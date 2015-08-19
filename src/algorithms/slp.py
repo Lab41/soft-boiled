@@ -51,7 +51,7 @@ def median(distance_func, vertices, weights=None):
     return LocEstimate(geo_coord=vertices[idx].geo_coord, dispersion=np.median(m[idx]), dispersion_std_dev=np.std(m[idx]))
 
 
-def get_known_locs(sqlCtx, table_name, min_locs=3, num_partitions=30, dispersion_threshold=50):
+def get_known_locs(sqlCtx, table_name, include_places=True,  min_locs=3, num_partitions=30, dispersion_threshold=50):
     '''
     Given a loaded twitter table, this will return all the twitter users with locations. A user's location is determined
     by the median location of all known tweets. A user must have at least min_locs locations in order for a location to be
@@ -75,17 +75,18 @@ def get_known_locs(sqlCtx, table_name, min_locs=3, num_partitions=30, dispersion
     geo_coords = sqlCtx.sql('select user.id_str, geo.coordinates from %s where geo.coordinates is not null' % table_name)\
         .map(lambda row: (row.id_str, row.coordinates))
 
-    place_coords = sqlCtx.sql("select user.id_str, place.bounding_box.coordinates from %s "%table_name +
-        "where geo.coordinates is null and size(place.bounding_box.coordinates) > 0 and place.place_type " +
-         "in ('city', 'neighborhood', 'poi')").map(lambda row: (row.id_str, bb_center(row.coordinates)))
+    if(include_places):
+        place_coords = sqlCtx.sql("select user.id_str, place.bounding_box.coordinates from %s "%table_name +
+            "where geo.coordinates is null and size(place.bounding_box.coordinates) > 0 and place.place_type " +
+            "in ('city', 'neighborhood', 'poi')").map(lambda row: (row.id_str, bb_center(row.coordinates)))
+        geo_coords = geoCoords.union(place_coords)
 
-
-    return geo_coords.union(place_coords).groupByKey()\
+    return geo_coords.groupByKey()\
         .filter(lambda (id_str,coord_list): len(coord_list) >= min_locs)\
             .map(lambda (id_str,coords): (id_str, median(haversine, [LocEstimate(GeoCoord(lat,lon), None, None)\
-                                                                     for lat,lon in coords])))\
-                                                                     .filter(lambda (id_str, loc): loc.dispersion < dispersion_threshold)\
-                                                                     .coalesce(num_partitions).cache()
+                for lat,lon in coords])))\
+            .filter(lambda (id_str, loc): loc.dispersion < dispersion_threshold)\
+            .coalesce(num_partitions).cache()
 
 
 def get_edge_list(sqlCtx, table_name, num_partitions=300):
@@ -216,13 +217,13 @@ def evaluate(locs_known, edges, holdout_func, slp_closure):
         .filter(lambda (src_id, loc): holdout_func(src_id))\
         .join(locs_known)\
         .map(lambda (src_id, (vtx_found, vtx_actual)) :\
-             haversine(vtx_found.geo_coord, vtx_actual.geo_coord))
+             (src_id, (haversine(vtx_found.geo_coord, vtx_actual.geo_coord), vtx_found)))
 
-    errors_local = errors.collect()
+    errors_local = errors.map(lambda (src_id, (dist, est_loc)) : dist).collect()
 
     #because cannot easily calculate median in RDDs we will bring deltas local for stats calculations.
     #With larger datasets, we may need to do this in the cluster, but for now will leave.
-    return {
+    return (errors, {
         'median': np.median(errors_local),
         'mean': np.mean(errors_local),
         'coverage':len(errors_local)/float(total_locs - num_locs),
@@ -230,7 +231,7 @@ def evaluate(locs_known, edges, holdout_func, slp_closure):
         'total_locs':total_locs,
         'found_locs': len(errors_local),
         'holdout_ratio' : 1 - num_locs/float(total_locs)
-    }
+    })
 
 def predict_country_slp(tweets, bounding_boxes):
     '''

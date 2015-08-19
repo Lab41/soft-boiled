@@ -51,7 +51,7 @@ class EstimatorCurve:
                 self.lookup(max_dist, estimated_loc.dispersion_std_dev))
 
     @staticmethod
-    def load_from_rdds(locs_known, edges, desired_samples=1000):
+    def load_from_rdds(locs_known, edges, desired_samples=1000, dispersion_threshold=150):
         '''
         Creates an EstimatorCurve
 
@@ -78,25 +78,21 @@ class EstimatorCurve:
                        median(haversine, [loc for loc,w in neighbors], [w for loc,w in neighbors]))\
             .join(locs_known)\
             .mapValues(lambda (found_loc, known_loc) :\
-                (known_loc, found_loc, haversine(known_loc.geo_coord,  found_loc.geo_coord)))
-
+                (found_loc, known_loc,  haversine(known_loc.geo_coord,  found_loc.geo_coord)))\
+            .filter(lambda (src_id, (found_loc, known_loc, dist)) : found_loc.dispersion < dispersion_threshold)
 
         #some medians might have std_devs of zero
         close_locs = medians.filter(lambda (src_id, (found_loc, known_loc, dist)) : found_loc.dispersion_std_dev == 0)
-        remaining_locs = medians.filter(lambda (src_id, (found_loc, known_loc, dist)) : found_loc.dispersion_std_dev != 0)
+        #remaining_locs = medians.filter(lambda (src_id, (found_loc, known_loc, dist)) : found_loc.dispersion_std_dev != 0)
 
-        #values_w_stdev = remaining_locs.map(lambda (src_id, (found_loc, known_loc, dist)) :\
-        #    (src_id, (dist-found_loc.dispersion/found_loc.dispersion_std_dev)))\
-        #    .values()
-
-        values_w_stdev = remaining_locs.map(lambda (src_id, (found_loc, known_loc, dist)) :\
-                (src_id, (dist/found_loc.dispersion_std_dev)))\
-                .values()
+        values = medians.map(lambda (src_id, (found_loc, known_loc, dist)) :\
+            (src_id, ((dist-found_loc.dispersion)/found_loc.dispersion_std_dev if found_loc.dispersion_std_dev != 0 else 0)))\
+            .values()
 
         values_wo_stdev = close_locs.map(lambda (src_id, (found_loc, known_loc, dist)): (src_id, dist))\
                                                 .values()
 
-        return EstimatorCurve(EstimatorCurve.build_curve(values_w_stdev, desired_samples),\
+        return EstimatorCurve(EstimatorCurve.build_curve(values, desired_samples),\
             EstimatorCurve.build_curve(values_wo_stdev, desired_samples))
 
     @staticmethod
@@ -130,29 +126,63 @@ class EstimatorCurve:
         return np.column_stack((np.sort(sample.collect()), np.arange(cnt)/float(cnt)))
 
 
-    def lookup(self, num_std_devs):
+    def lookup(self, val, axis=0):
+        return EstimatorCurve.lookup_static(self.w_stdev, val, axis)
+
+    @staticmethod
+    def lookup_static(table, val, axis=0):
         '''
         lookups up closes stdev by subtracting from lookup table, taking absolute value
         and finding which is closest to zero by sorting and taking the first element
 
         Args:
-            num_std_devs (float): the stdev to lookup
+        num_std_devs (float): the stdev to lookup
 
         Returns:
-            CDF (float) : Percentage of actual locations found to be within the input stdev
+        CDF (float) : Percentage of actual locations found to be within the input stdev
         '''
 
-        max_std = np.max(self.w_stdev[:, 0])
-        min_std = np.min(self.w_stdev[:, 0])
+        max_v = np.max(table[:, axis])
+        min_v = np.min(table[:, axis])
 
-        if (num_std_devs < max_std and num_std_devs > min_std) :
-            arr = np.absolute(self.w_stdev-np.array([num_std_devs,0]))
-            return arr[arr[:,0].argsort()][0][1]
-        elif (num_std_devs == 0):
-            print("reference the stdev == 0 curve")
-            return -1
+        if (val < max_v and val > min_v) :
+            if(axis==0):
+                arr = np.absolute(table-np.array([val,0]))
+            elif(axis == 1):
+                arr = np.absolute(table-np.array([0,val]))
+            else:
+                print("Axis must be either 0 or 1")
+
+            return arr[arr[:,axis].argsort()][0][(axis+1)%2]
         else:
+            print("out of range")
             return 1
+
+
+    def validator(self, sc, eval_rdd):
+        '''
+        Validates a curve
+
+        Args:
+            curve(numpy.darray) : x axis is stdev, y axis is percent
+            eval_rdd(rdd (src_id, (dist, loc_estimate))): this is the result of the evaluator function
+        '''
+        b_curve = sc.broadcast(self.w_stdev)
+
+        x_vals = np.arange(.1,1,.05)
+
+        local = eval_rdd.map(lambda (src_id, (dist, loc_estimate)) :\
+            [1 if EstimatorCurve.lookup_static(b_curve.value, pct, axis=1) > (dist - loc_estimate.dispersion)/loc_estimate.dispersion_std_dev\
+            else 0 for pct in x_vals])\
+            .collect()
+
+        y_vals = np.sum(np.array([np.array(xi) for xi in local]), axis=0)/float(len(local))
+
+        print("sum of difference of squares: %s" % np.sum(np.sqrt((y_vals - x_vals)**2)))
+        plt.plot(x_vals, x_vals)
+        plt.plot(x_vals, y_vals)
+        plt.show()
+
 
 
     def plot(self, w_stdev_lim=10, wo_stdev_lim=1000):
@@ -168,7 +198,7 @@ class EstimatorCurve:
         fig = plt.figure(figsize=(16, 8))
         ax1 = fig.add_subplot(121)
         ax1.plot(self.w_stdev[:,0], self.w_stdev[:,1], label="stdev>0")
-        ax1.set_xlim([-1,w_stdev_lim])
+        ax1.set_xlim([-10,w_stdev_lim])
         ax1.set_xlabel("standard deviation")
         ax1.set_ylabel("percentage (CDF)")
         ax1.legend()
