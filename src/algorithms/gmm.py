@@ -370,8 +370,15 @@ def run_gmm_test(sc, sqlCtx, table_name, fields, model, where_clause=''):
     mean_error = np.mean(errors)
     print('Median Error', median_error)
     print('Mean Error: ', mean_error)
+
+    # calculate coverage
+    try:
+        coverage = len(errors)/float(num_vals)
+    except ZeroDivisionError:
+        coverage = np.nan
+
     # gather errors
-    final_results = {'median': median_error, 'mean': mean_error, 'coverage': len(errors)/float(num_vals),
+    final_results = {'median': median_error, 'mean': mean_error, 'coverage': coverage,
                      'num_locs': len(errors), 'fields': fields}
     return final_results
 
