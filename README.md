@@ -8,8 +8,7 @@ The usage examples below assume that you have created a zip file containing the 
 ### Usage:
 ```python
 sc.addPyFile ('/path/to/zip/soft-boiled.zip') # Can be an hdfs path
-from src.algorithms.slp import *
-import src.algorithms.slp as slp
+from src.algorithms import slp
 
 # Create dataframe from parquet data
 tweets = sqlCtx.read.parquet('hdfs:///post_etl_datasets/twitter')
@@ -51,28 +50,28 @@ test_results = slp.evaluate(locs_known, edge_list, holdout_10pct, train_f)
 ### Usage:
 ```python
 sc.addPyFile ('/path/to/zip/soft-boiled.zip') # Can be an hdfs path
-from src.algorithms.gmm import *
+from src.algorithms import gmm
 
 # Create dataframe from parquet data
 tweets = sqlCtx.read.parquet('hdfs:///post_etl_datasets/twitter')
 tweets.registerTempTable('my_tweets')
 
 # Train GMM model
-gmm_model = train_gmm(sqlCtx, 'my_tweets', ['user.location', 'text'], min_occurrences=10, max_num_components=12)
+gmm_model = gmm.train_gmm(sqlCtx, 'my_tweets', ['user.location', 'text'], min_occurrences=10, max_num_components=12)
 
 # Test GMM model
-test_results = run_gmm_test(sc, sqlCtx, 'my_tweets', ['user.location', 'text'], gmm_model)
+test_results = gmm.run_gmm_test(sc, sqlCtx, 'my_tweets', ['user.location', 'text'], gmm_model)
 print test_results
 
 # Use GMM model to predict tweets
 other_tweets = sqlCtx.read.parquet('hdfs:///post_etl_datasets/twitter')
-estimated_locs = predict_user_gmm(sc, other_tweets, ['user.location'], gmm_model, radius=100, predict_lower_bound=0.2)
+estimated_locs = gmm.predict_user_gmm(sc, other_tweets, ['user.location'], gmm_model, radius=100, predict_lower_bound=0.2)
 
 # Save model for future prediction use
-save_model(gmm_model, '/local/path/to/model_file.csv.gz')
+gmm.save_model(gmm_model, '/local/path/to/model_file.csv.gz')
 
 # Load a model, produces the same output as train
-gmm_model = load_model('/local/path/to/model_file.csv.gz')
+gmm_model = gmm.load_model('/local/path/to/model_file.csv.gz')
 ```
 ### Options
 ##### Related to GMM :
