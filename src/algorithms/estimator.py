@@ -2,6 +2,7 @@ import csv
 import matplotlib.pyplot as plt
 import numpy as np
 from src.algorithms.slp import haversine, median
+from src.utils.geo import GeoCoord
 
 class EstimatorCurve:
     '''
@@ -36,22 +37,22 @@ class EstimatorCurve:
 
         geo = estimated_loc.geo_coord
 
-        top_dist = haversine(geo, geoCoord(upper_bound.lat, geo.lon))
-        bottom_dist = haversine(geo, geoCoord(lower_bound.lat, geo.lon))
+        top_dist = haversine(geo, GeoCoord(upper_bound.lat, geo.lon))
+        bottom_dist = haversine(geo, GeoCoord(lower_bound.lat, geo.lon))
 
-        r_dist = haversine(geo, geoCoord(geo.lat, upper_bound.lon))
-        l_dist = haversine(geo, geoCoord(geo.lat, lower_bound.lon))
+        r_dist = haversine(geo, GeoCoord(geo.lat, upper_bound.lon))
+        l_dist = haversine(geo, GeoCoord(geo.lat, lower_bound.lon))
         min_dist = min([top_dist, bottom_dist, r_dist, l_dist])
         max_dist = max([top_dist, bottom_dist, r_dist, l_dist])
 
         #min_prob = self.lookup( (min_dist- med_error)/std_dev)
         #max_prob = self.lookup( (max_dist - med_error)/ std_dev)
 
-        return (self.lookup(min_dist/estimated_loc.dispersion_std_dev),\
-                self.lookup(max_dist, estimated_loc.dispersion_std_dev))
+        return (self.lookup((min_dist-estimated_loc.dispersion)/estimated_loc.dispersion_std_dev),\
+                self.lookup((max_dist-estimated_loc.dispersion), estimated_loc.dispersion_std_dev))
 
     @staticmethod
-    def load_from_rdds(locs_known, edges, desired_samples=1000, dispersion_threshold=150):
+    def load_from_rdds(locs_known, edges, desired_samples=1000, dispersion_threshold=150, neighbor_threshold=3):
         '''
         Creates an EstimatorCurve
 
@@ -73,7 +74,7 @@ class EstimatorCurve:
         medians =  known_edges.join(locs_known)\
             .map(lambda (src_id, ((dst_id, weight), src_loc)) : (dst_id, (src_loc, weight)))\
             .groupByKey()\
-            .filter(lambda (src_id, neighbors) : len(neighbors) > 2)\
+            .filter(lambda (src_id, neighbors) : len(neighbors) >= neighbor_threshold)\
             .mapValues(lambda neighbors :\
                        median(haversine, [loc for loc,w in neighbors], [w for loc,w in neighbors]))\
             .join(locs_known)\
@@ -154,8 +155,9 @@ class EstimatorCurve:
                 print("Axis must be either 0 or 1")
 
             return arr[arr[:,axis].argsort()][0][(axis+1)%2]
+        elif val < min_v:
+            return 0
         else:
-            print("out of range")
             return 1
 
 
@@ -183,6 +185,37 @@ class EstimatorCurve:
         plt.plot(x_vals, y_vals)
         plt.show()
 
+    def confidence_estimation_viewer(self, sc, eval_rdd):
+        '''
+        Displays a plot of the estimated and actual probability that the true point is within an array of radius values
+
+        Args:
+            curve(numpy.darray) : x axis is stdev, y axis is percent
+            eval_rdd(rdd (src_id, (dist, loc_estimate))): this is the result of the evaluator function
+        '''
+
+        test_radius = [0.5,1,5,10,25,50,75,100,150,200,250,300,400,500,600,700,800,900,1000]
+        b_curve = sc.broadcast(self.w_stdev)
+
+        actual_pcts = eval_rdd.map(lambda (src_id, (dist, loc_estimate)) : \
+                    [1 if dist <= radius else 0 for radius in test_radius]).collect()
+        y_vals_act_pct = np.sum(np.array([np.array(xi) for xi in actual_pcts]), axis=0)/float(len(actual_pcts))
+
+        predict_pcts = eval_rdd.map(lambda (src_id, (dist, loc_estimate)) : \
+            [EstimatorCurve.lookup_static(b_curve, (radius-loc_estimate.dispersion)/loc_estimate.dispersion_std_dev if loc_estimate.dispersion_std_dev !=0 else 0, axis=0)\
+             for radius in test_radius]).collect()
+
+        y_vals_pred_pct = np.sum(np.array([np.array(xi) for xi in predict_pcts]), axis=0)/float(len(predict_pcts))
+
+
+        act = plt.plot(test_radius, y_vals_act_pct, 'b', label="Actual")
+        pred = plt.plot(test_radius, y_vals_pred_pct, 'r', label="Predicted")
+
+        plt.xlabel("Radius")
+        plt.ylabel("Percentage Within")
+        plt.title("Percentage Within Radius")
+        plt.legend(loc=4)
+        plt.show()
 
 
     def plot(self, w_stdev_lim=10, wo_stdev_lim=1000):

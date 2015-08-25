@@ -1,6 +1,7 @@
 import numpy as np
 import itertools
 from collections import namedtuple, defaultdict
+import math
 from math import floor, ceil, radians, sin, cos, asin, sqrt, pi
 import pandas as pd
 from src.utils.geo import bb_center, GeoCoord, haversine
@@ -79,7 +80,7 @@ def get_known_locs(sqlCtx, table_name, include_places=True,  min_locs=3, num_par
         place_coords = sqlCtx.sql("select user.id_str, place.bounding_box.coordinates from %s "%table_name +
             "where geo.coordinates is null and size(place.bounding_box.coordinates) > 0 and place.place_type " +
             "in ('city', 'neighborhood', 'poi')").map(lambda row: (row.id_str, bb_center(row.coordinates)))
-        geo_coords = geoCoords.union(place_coords)
+        geo_coords = geo_coords.union(place_coords)
 
     return geo_coords.groupByKey()\
         .filter(lambda (id_str,coord_list): len(coord_list) >= min_locs)\
@@ -175,7 +176,7 @@ def evaluate(locs_known, edges, holdout_func, slp_closure):
 
         holdout_func (function) : function responsible for filtering a holdout data set. For example::
 
-                lambda (src_id) : src_id[-1] != '6'
+                lambda (src_id) : src_id[-1] == '6'
 
             can be used to get approximately 10% of the data since the src_id's are evenly distributed numeric values
 
@@ -233,7 +234,7 @@ def evaluate(locs_known, edges, holdout_func, slp_closure):
         'holdout_ratio' : 1 - num_locs/float(total_locs)
     })
 
-def predict_country_slp(tweets, bounding_boxes):
+def predict_country_slp(tweets, bounding_boxes, sc):
     '''
     Take a set of estimates of user locations and estimate the country that user is in
 

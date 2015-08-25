@@ -383,7 +383,7 @@ def run_gmm_test(sc, sqlCtx, table_name, fields, model, where_clause=''):
     return final_results
 
 
-def predict_country_gmm(tweets, bounding_boxes):
+def predict_country_gmm(tweets, bounding_boxes, sc):
     """
     Take a set of estimates of user locations and estimate the country that user is in
 
