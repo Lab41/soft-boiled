@@ -49,7 +49,7 @@ class EstimatorCurve:
         #max_prob = self.lookup( (max_dist - med_error)/ std_dev)
 
         return (self.lookup((min_dist-estimated_loc.dispersion)/estimated_loc.dispersion_std_dev),\
-                self.lookup((max_dist-estimated_loc.dispersion), estimated_loc.dispersion_std_dev))
+                self.lookup((max_dist-estimated_loc.dispersion)/estimated_loc.dispersion_std_dev))
 
     @staticmethod
     def load_from_rdds(locs_known, edges, desired_samples=1000, dispersion_threshold=150, neighbor_threshold=3):
