@@ -88,10 +88,10 @@ def find_best_region(geo_coord_rdd, shapefile_path, region_name, sc):
     '''
     Take a set of estimates of user locations and estimate the country that user is in
     Args:
-        tweets (RDD  (id_str, LocEstimate))
-        bounding_boxes (list [(country_code, (min_lat, max_lat, min_lon, max_lon)),...])
-        polygon_df (pandas dataframe (polygon verticies, polygon ID string))
-            ideally is returned from shapefile_2_df()
+        geo_coord_rdd (RDD  (id_str, GeoCoord))
+        shapefile_path (string) : filepath to shapefile minus the extension (i.e., no .shp)
+        region_name (string) : depth of the shape file (ISO2, state, etc)
+        sc: spark context
     Returns:
         Country Codes (list) : Predicted countries reperesented as their numeric codes
     '''
@@ -152,7 +152,7 @@ def _predict_country_using_lookup(geo_coord, lat_dict, lon_dict, bounding_boxes)
     Internal helper function that uses broadcast lookup tables to take a single location estimate and show
         what country bounding boxes include that point
     Args:
-        loc_estimate (LocEstimate) : Estimate location
+        geo_coord (GeoCoord) : Estimate location
         lat_dict (broadcast dictionary {integer_lat:set([bounding_box_indexes containing this lat])}) :
             Indexed lookup dictionary for finding countries that exist at the specified latitude
         lon_dict ((broadcast dictionary) {integer_lon:set([bounding_box_indexes containing this lon])})) :
