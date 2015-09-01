@@ -9,6 +9,7 @@ import gzip
 import csv
 import itertools
 from collections import namedtuple, defaultdict
+from pyspark import RDD
 
 GMMLocEstimate = namedtuple('LocEstimate', ['geo_coord', 'prob'])
 
@@ -264,7 +265,7 @@ def predict_probability_radius(gmm_model, radius, center_point):
     return total_prob
 
 
-def predict_user_gmm(sc, tweets_to_predict, fields, model, radius=None, predict_lower_bound=0):
+def predict_user_gmm(sc, tweets_to_predict, fields, model, radius=None, predict_lower_bound=0, num_partitions=5000):
     """
     Takes a set of tweets and for each user in those tweets it predicts a location
     Also returned are the probability of that prediction location being w/n 100 km of the true point
@@ -276,6 +277,7 @@ def predict_user_gmm(sc, tweets_to_predict, fields, model, radius=None, predict_
         model (dict): Dictionary of {word:(mixture.GMM, error)}
         radius (float): Distance from most likely point at which we should estimate containment probability (if not None)
         predict_lower_bound (float): Probability hreshold below which we should filter tweets
+        num_partitions (int): Number of partitions. Should be based on size of the data
 
     Returns:
         loc_est_by_user (RDD): An RDD of (id_str, GMMLocEstimate)
@@ -283,11 +285,16 @@ def predict_user_gmm(sc, tweets_to_predict, fields, model, radius=None, predict_
 
     model_bcast = sc.broadcast(model)
 
-    tweets_by_user = tweets_to_predict.rdd.filter(lambda row: row.user!=None)\
-                        .keyBy(lambda row: row.user.id_str).groupByKey()
+    # Handle case where input is Dataframe
+    if not isinstance(tweets_to_predict, RDD):
+        tweets_to_predict = tweets_to_predict.rdd
+
+    tweets_by_user = tweets_to_predict.filter(lambda row: row != None and row.user!=None and row.user.id_str !=None)\
+                        .map(lambda tweet: (tweet.user.id_str, tokenize_tweet(tweet, fields)))\
+                        .groupByKey(numPartitions=num_partitions)
 
     loc_est_by_user = tweets_by_user\
-        .mapValues(lambda tweets: list(itertools.chain(*[tokenize_tweet(tweet, fields) for tweet in tweets])))\
+        .mapValues(lambda tokens: list(itertools.chain(*tokens)))\
         .flatMapValues(lambda tokens: get_most_likely_point(tokens, model_bcast, radius=radius))\
         .filter(lambda (id_str, est_loc): est_loc.prob >= predict_lower_bound or radius is None)
 
