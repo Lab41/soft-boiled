@@ -73,7 +73,7 @@ def shapefile_2_df(filepath, region_name, ur_boundary, ll_boundary, proj='cyl', 
         resolution='i',
         suppress_ticks=True)
 
-    world=m.readshapefile(filepath,'world')
+    world=m.readshapefile(filepath,'world', drawbounds=False)
 
     df_map = pd.DataFrame({
         'poly': [Polygon(xy) for xy in m.world],
@@ -166,7 +166,7 @@ def _predict_country_using_lookup(geo_coord, lat_dict, lon_dict, bounding_boxes)
     potential_lons = lon_dict.value[math.floor(geo_coord.lon)]
     intersection = potential_lats.intersection(potential_lons)
     if len(intersection) == 0:
-        return []
+        return [], geo_coord
         #raise ValueError('uh oh')
     else:
         for index in intersection:
