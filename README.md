@@ -1,7 +1,7 @@
 # Geo-Inferencing in Twitter [Soft-Boiled] 
 
 ## General
-The usage examples below assume that you have created a zip file containing the top level directory of the repo called soft-boiled.zip
+The usage examples below assume that you have created a zip file containing the top level directory of the repo called soft-boiled.zip. Example IPython notebooks demostrating the functionality of these algorithms can also be found in the notebooks directory of this repository.
 
 ## Spatial Label Propagation [slp.py]:
 
