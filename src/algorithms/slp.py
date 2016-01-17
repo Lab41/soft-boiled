@@ -3,7 +3,6 @@ import itertools
 from collections import namedtuple, defaultdict
 import math
 from math import floor, ceil, radians, sin, cos, asin, sqrt, pi
-import pandas as pd
 from src.utils.geo import bb_center, GeoCoord, haversine
 
 LocEstimate = namedtuple('LocEstimate', ['geo_coord', 'dispersion', 'dispersion_std_dev'])
