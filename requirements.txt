@@ -1,6 +1,1 @@
-numpy
-scipy
-patsy
-pandas
-statsmodels
-scikit-learn
+mock
