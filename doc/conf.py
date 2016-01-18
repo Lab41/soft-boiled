@@ -15,11 +15,24 @@
 import sys
 import os
 import shlex
+import sys
+
+on_rtd = os.environ.get('READTHEDOCS', None) == 'True'
+if on_rtd:
+    from mock import Mock as MagicMock
+    class Mock(MagicMock):
+        @classmethod
+        def __getattr__(cls, name):
+            return Mock()
+    MOCK_MODULES = ['pyspark.RDD', 'numpy', 'pandas', 'matplotlib.pyplot','sklearn',
+                 'pyspark', 'statsmodels.sandbox.distributions.extras']
+    sys.modules.update((mod_name, Mock()) for mod_name in MOCK_MODULES)
 
 # If extensions (or modules to document with autodoc) are in another directory,
 # add these directories to sys.path here. If the directory is relative to the
 # documentation root, use os.path.abspath to make it absolute, like shown here.
-sys.path.insert(0, os.path.abspath('..'))
+sys.path.insert(0, '../../soft-boiled')
+#sys.path.insert(0, os.path.abspath('..'))
 
 # -- General configuration ------------------------------------------------
 
