@@ -24,8 +24,9 @@ if on_rtd:
         @classmethod
         def __getattr__(cls, name):
             return Mock()
-    MOCK_MODULES = ['pyspark.RDD', 'numpy', 'pandas', 'matplotlib.pyplot','sklearn',
-                 'pyspark', 'statsmodels.sandbox.distributions','statsmodels', 'matplotlib']
+    MOCK_MODULES = ['pyspark.RDD', 'numpy', 'pandas', 'matplotlib.pyplot','sklearn','statsmodels',
+             'statsmodels.sandbox', 'statsmodels.sandbox.distributions',
+             'statsmodels.sandbox.distributions.extras', 'pyspark', 'matplotlib', 'numpy.testing']
     sys.modules.update((mod_name, Mock()) for mod_name in MOCK_MODULES)
 
 # If extensions (or modules to document with autodoc) are in another directory,
